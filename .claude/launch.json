@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "photo-manager",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "tools/serve.py"
+      ],
+      "port": 8000,
+      "url": "http://127.0.0.1:8000"
+    }
+  ]
+}

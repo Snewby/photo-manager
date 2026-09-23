@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Manager — library</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23222'/><rect x='3' y='3' width='4.5' height='4.5' rx='1' fill='%23e8b64c'/><rect x='8.5' y='3' width='4.5' height='4.5' rx='1' fill='%23e8b64c' opacity='.55'/><rect x='3' y='8.5' width='4.5' height='4.5' rx='1' fill='%23e8b64c' opacity='.55'/><rect x='8.5' y='8.5' width='4.5' height='4.5' rx='1' fill='%23e8b64c' opacity='.3'/></svg>">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="library-body">
+
+<header class="bar">
+  <h1>Library</h1>
+  <span id="counts" class="bar__note"></span>
+  <div class="bar__spacer"></div>
+  <a class="button button--quiet" href="/triage">Triage</a>
+  <a class="button button--quiet" href="/tag">Tag</a>
+  <a class="button button--quiet" href="/">Card</a>
+</header>
+
+<div id="error" class="banner banner--bad" hidden></div>
+
+<main class="library">
+
+  <!-- Left: FR-7.4. Every row says what it would cost to click it, and a row
+       that would return nothing is not drawn at all. -->
+  <aside class="library__filters" id="filters">
+    <div class="filters__head">
+      <h2 class="tag__heading">Filters</h2>
+      <button id="clear-all" type="button" class="button button--quiet" hidden>Clear all</button>
+    </div>
+    <p id="filters-empty" class="tag__hint" hidden>Nothing to filter on yet.</p>
+    <div id="facets"></div>
+  </aside>
+
+  <!-- Right: FR-7.1. Newest first, and the line above it says what is being
+       looked at rather than leaving it to be inferred from the panel. -->
+  <section class="library__results">
+    <p id="summary" class="library__summary" aria-live="polite"></p>
+
+    <div id="grid" class="grid"></div>
+
+    <p id="empty" class="empty" hidden>
+      Nothing matches that. Take a filter off on the left.
+    </p>
+
+    <div class="library__more">
+      <button id="more" type="button" class="button" hidden>Show more</button>
+      <span id="more-note" class="tag__hint"></span>
+    </div>
+  </section>
+</main>
+
+<!-- One group of the filter panel. -->
+<template id="facet-template">
+  <section class="facet">
+    <h3 class="facet__name"></h3>
+    <ul class="facet__values"></ul>
+  </section>
+</template>
+
+<template id="facet-value-template">
+  <li class="facet__row">
+    <button type="button" class="facet__pick">
+      <span class="facet__label"></span>
+      <span class="facet__count"></span>
+    </button>
+    <button type="button" class="facet__clear" title="Take this filter off" hidden>×</button>
+  </li>
+</template>
+
+<template id="card-template">
+  <figure class="card">
+    <button type="button" class="card__open" title="Open this frame">
+      <span class="card__frame">
+        <img class="card__image" alt="" loading="lazy" decoding="async">
+        <span class="card__rating" hidden></span>
+        <span class="card__raw" hidden>RAW</span>
+      </span>
+    </button>
+    <figcaption class="card__caption">
+      <span class="card__when"></span>
+      <span class="card__where"></span>
+    </figcaption>
+  </figure>
+</template>
+
+<!-- One photograph, as large as the window allows, with everything the
+     catalog knows about it beside it (FR-7.5). The frame's own fields and the
+     outing's are separated on purpose: one of them is fifty-four photographs.
+-->
+<div id="detail" class="detail" hidden>
+  <header class="detail__bar">
+    <button id="detail-prev" type="button" class="button button--quiet" title="Newer (←)">←</button>
+    <span id="detail-position" class="bar__position"></span>
+    <button id="detail-next" type="button" class="button button--quiet" title="Older (→)">→</button>
+    <span id="detail-name" class="bar__filename"></span>
+    <div class="bar__spacer"></div>
+    <span id="detail-note" class="bar__note"></span>
+    <button id="detail-close" type="button" class="button button--quiet">Close (Esc)</button>
+  </header>
+
+  <div class="detail__body">
+    <div class="detail__stage">
+      <img id="detail-image" class="detail__image" alt="">
+      <p id="detail-broken" class="detail__message" hidden>
+        This file is in the catalog but could not be read from disk.
+      </p>
+    </div>
+
+    <aside class="detail__side">
+      <!-- The one edit that is a single click, so it is not inside a form. -->
+      <div class="field">
+        <span class="field__label">Rating</span>
+        <div id="stars" class="stars"></div>
+      </div>
+
+      <form id="frame-form" class="fields" autocomplete="off">
+        <p class="tag__hint detail__scope">This frame only</p>
+        <label class="field">
+          <span class="field__label">Location</span>
+          <input id="d-location" type="text" list="loc-list" class="field__input"
+                 placeholder="leave empty to use the outing's">
+          <datalist id="loc-list"></datalist>
+        </label>
+        <label class="field">
+          <span class="field__label">People</span>
+          <input id="d-people" type="text" list="ppl-list" class="field__input"
+                 placeholder="Alice, Bob">
+          <datalist id="ppl-list"></datalist>
+        </label>
+        <label class="field">
+          <span class="field__label">Tags</span>
+          <input id="d-tags" type="text" list="tag-list" class="field__input"
+                 placeholder="beach, sunset">
+          <datalist id="tag-list"></datalist>
+        </label>
+        <div class="fields__actions">
+          <button type="submit" class="button button--go">Save this frame</button>
+          <span id="frame-note" class="tag__hint"></span>
+        </div>
+      </form>
+
+      <!-- The outing's own fields. Editable, and labelled with what they cost,
+           because these reach every photograph in the session (FR-3.3). -->
+      <form id="outing-form" class="fields" autocomplete="off" hidden>
+        <p class="tag__hint detail__scope" id="outing-scope"></p>
+        <label class="field">
+          <span class="field__label">Location of the outing</span>
+          <input id="d-session-location" type="text" list="loc-list" class="field__input">
+        </label>
+        <label class="field">
+          <span class="field__label">Event</span>
+          <input id="d-event" type="text" class="field__input" placeholder="Beach day">
+        </label>
+        <div class="fields__actions">
+          <button type="submit" class="button">Save the outing</button>
+          <span id="outing-note" class="tag__hint"></span>
+        </div>
+      </form>
+
+      <p id="no-outing" class="tag__hint" hidden>
+        Not grouped into an outing yet, so it has no event.
+        <a href="/tag">Group its day</a> to give it one.
+      </p>
+
+      <dl id="facts" class="facts"></dl>
+    </aside>
+  </div>
+</div>
+
+<template id="fact-template">
+  <div class="facts__row">
+    <dt class="facts__name"></dt>
+    <dd class="facts__value"></dd>
+  </div>
+</template>
+
+<script src="/static/library.js"></script>
+</body>
+</html>

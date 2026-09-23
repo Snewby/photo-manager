@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Manager — card</title>
+<!-- Inline so the page needs no second request and no network at all (NFR-5). -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23222'/><circle cx='8' cy='9' r='3.5' fill='none' stroke='%23e8b64c' stroke-width='1.5'/><rect x='5' y='3' width='6' height='2' rx='1' fill='%23e8b64c'/></svg>">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="bar">
+  <h1>Card</h1>
+  <div class="bar__spacer"></div>
+  <a id="to-cull" class="button" href="/cull" hidden>Cull</a>
+  <a class="button button--quiet" href="/triage">Triage</a>
+  <a class="button button--quiet" href="/library">Library</a>
+  <a class="button button--quiet" href="/tag">Tag</a>
+  <button id="rescan" type="button" class="button">Rescan</button>
+</header>
+
+<!-- FR-1.1a lives here. Four situations, four messages, and never an empty
+     grid standing in for any of them. -->
+<section id="status" class="status" hidden>
+  <span id="status-pill" class="pill"></span>
+  <p id="status-message" class="status__message"></p>
+</section>
+
+<section id="summary" class="summary" hidden>
+  <dl class="summary__figures">
+    <div><dt>Photographs</dt><dd id="count-photos">—</dd></div>
+    <div><dt>RAW pairs</dt><dd id="count-pairs">—</dd></div>
+    <div><dt>Unpaired</dt><dd id="count-unpaired">—</dd></div>
+    <div><dt>On the card</dt><dd id="count-bytes">—</dd></div>
+    <div class="summary__headline"><dt>To cull</dt><dd id="count-to-cull">—</dd></div>
+  </dl>
+
+  <div class="dedup">
+    <span class="chip chip--new"><b id="dedup-new">0</b> new</span>
+    <span class="chip chip--likely"><b id="dedup-likely">0</b> likely imported</span>
+    <span class="chip chip--imported"><b id="dedup-imported">0</b> imported</span>
+    <span class="chip chip--rescued"><b id="dedup-rescued">0</b> name reused</span>
+    <button id="confirm" type="button" class="button button--quiet" hidden>Confirm by hash</button>
+  </div>
+
+  <div id="confirm-progress" class="progress" hidden>
+    <div class="progress__track"><div id="progress-bar" class="progress__bar"></div></div>
+    <p id="progress-text" class="progress__text"></p>
+  </div>
+
+  <p class="summary__note" id="scan-note"></p>
+  <p class="summary__note" id="cull-note" hidden></p>
+
+  <!-- The import. Two steps on purpose: the first one copies nothing and
+       exists so the names and the total can be read before committing. -->
+  <div id="import" class="importer" hidden>
+    <div class="importer__row">
+      <button id="import-plan" type="button" class="button">Plan the import</button>
+      <button id="import-go" type="button" class="button button--go" hidden>Import</button>
+      <span id="import-note" class="importer__note"></span>
+    </div>
+    <ul id="import-sample" class="importer__sample" hidden></ul>
+    <div id="import-progress" class="progress" hidden>
+      <div class="progress__track"><div id="import-bar" class="progress__bar"></div></div>
+      <p id="import-text" class="progress__text"></p>
+    </div>
+    <ul id="import-problems" class="importer__problems" hidden></ul>
+  </div>
+</section>
+
+<main id="grid" class="grid" aria-live="polite"></main>
+
+<template id="tile-template">
+  <figure class="tile">
+    <a class="tile__link">
+    <div class="tile__frame">
+      <img class="tile__image" alt="" loading="lazy" decoding="async">
+      <span class="tile__badge" hidden></span>
+      <span class="tile__raw" hidden>RAW</span>
+    </div>
+    </a>
+    <figcaption class="tile__caption"></figcaption>
+  </figure>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

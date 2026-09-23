@@ -1,0 +1,42 @@
+# Photo Manager configuration.
+#
+# Copy to config.toml and edit. config.toml is gitignored because it is
+# machine-specific; this example is committed.
+#
+# Nothing here is a constant in the code. The library is expected to move to a
+# larger volume (REQUIREMENTS.md C-2) — when it does, change library_root here
+# and nothing else. Catalog paths are stored relative to this root, so no
+# database migration is needed.
+
+# Required. Root of the photo library.
+library_root = 'C:\Users\you\Pictures\Photos'
+
+# Where the card's DCIM tree appears. LEAVE THIS COMMENTED OUT unless you have
+# a reason not to: the drive letter changes between readers, ports and machines,
+# so the app probes the attached volumes for DCIM/<card_folder_glob> instead of
+# trusting a letter. Set it only to force a specific path — and note that if you
+# do, and it is wrong, you get an error naming where the card actually is rather
+# than a silently empty grid.
+# card_dcim_root = 'D:\DCIM'
+
+# The camera's image folders roll over: 100_FUJI, 101_FUJI, ... so this is a
+# glob, not a folder name.
+card_folder_glob = '1??_FUJI'
+
+# Derived state — the SQLite catalog and the thumbnail cache. Both are
+# regenerable, so they live outside the library by default.
+# state_dir = 'C:\path\to\photo-manager\state'
+# database_path = 'C:\path\to\photo-manager\state\catalog.sqlite3'
+# thumbnail_cache_dir = 'C:\path\to\photo-manager\state\thumbnails'
+
+# Long edge of generated thumbnails, in pixels (FR-2.2).
+thumbnail_max_px = 400
+
+# Long edge of the culling view's large preview (FR-4.1). 1560 is exactly a
+# quarter of this camera's 6240 x 4160, which is the biggest preview the JPEG
+# decoder can produce without resampling — 453 ms a frame against 956 ms at
+# 1600 px. Raising it makes culling slower, not better.
+preview_max_px = 1560
+
+# Gap above which a sub-session split is suggested (FR-3.2). A suggestion only.
+session_gap_hours = 3.0

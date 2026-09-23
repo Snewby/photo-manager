@@ -1,0 +1,1045 @@
+/* Contact sheet styling.
+ *
+ * Dark, because every pixel that isn't a photograph is a distraction when you
+ * are judging photographs, and a light UI around a 160x120 tile shifts how the
+ * tile itself reads.
+ *
+ * The one thing this file is actually *required* to get right is making an
+ * already-imported photo visibly different from a new one (WU-2.2's acceptance
+ * criteria), and making the two kinds of "already imported" visibly different
+ * from each other. WU-2.1's whole design rests on `likely-imported` (a
+ * filename match, cheap, provisional) never being confused with `imported`
+ * (hash-confirmed, certain) — so one is drawn as a question and the other as a
+ * statement. A dashed amber outline asks; a solid grey label states.
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #16181c;
+  --bg-raised: #1e2127;
+  --line: #2f333c;
+  --text: #e7e9ee;
+  --text-dim: #9aa1ad;
+  --accent: #e8b64c;
+  --new: #5fb37a;
+  --likely: #e8b64c;
+  --imported: #6b717d;
+  --rescued: #6aa5e0;
+  --bad: #d9705f;
+}
+
+* { box-sizing: border-box; }
+
+/* The browser's own `display: none` for [hidden] is a UA-stylesheet rule, so
+ * any `display:` in this file beats it — and an element toggled with the
+ * hidden attribute then stays on screen forever. Found the honest way: the
+ * per-frame sheet is `display: flex` and greeted the first page load. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+}
+
+/* ---------------------------------------------------------------- bar */
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
+}
+
+.bar h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.bar__spacer { flex: 1; }
+
+.button {
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #272b33;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.button:hover { border-color: var(--accent); }
+.button:disabled { opacity: 0.5; cursor: default; border-color: var(--line); }
+.button--quiet { padding: 4px 10px; font-size: 13px; }
+
+/* ------------------------------------------------------------- status */
+
+.status {
+  margin: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg-raised);
+}
+.status--found { border-left-color: var(--new); }
+.status--problem { border-left-color: var(--bad); }
+
+.status__message { margin: 8px 0 0; font-size: 15px; }
+
+.pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #33373f;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  letter-spacing: 0.03em;
+}
+
+/* ------------------------------------------------------------ summary */
+
+.summary { margin: 18px; }
+
+.summary__figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin: 0 0 12px;
+}
+.summary__figures div { display: flex; flex-direction: column; }
+.summary__figures dt { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.summary__figures dd { margin: 0; font-size: 20px; font-variant-numeric: tabular-nums; }
+.summary__headline dd { color: var(--accent); font-weight: 600; }
+
+.dedup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+.chip {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.chip b { color: var(--text); font-variant-numeric: tabular-nums; }
+.chip--new { border-color: color-mix(in srgb, var(--new) 50%, var(--line)); }
+.chip--likely { border-color: color-mix(in srgb, var(--likely) 50%, var(--line)); border-style: dashed; }
+.chip--imported { border-color: color-mix(in srgb, var(--imported) 60%, var(--line)); }
+.chip--rescued { border-color: color-mix(in srgb, var(--rescued) 50%, var(--line)); }
+
+.progress { margin-top: 12px; max-width: 520px; }
+.progress__track { height: 4px; background: #2a2e36; border-radius: 2px; overflow: hidden; }
+.progress__bar { height: 100%; width: 0; background: var(--likely); transition: width 0.3s linear; }
+.progress__text { margin: 6px 0 0; color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.summary__note { margin: 12px 0 0; color: var(--text-dim); font-size: 12px; }
+.summary__note--bad { color: #f0c98a; }
+
+/* --------------------------------------------------------------- grid */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 12px;
+  padding: 0 18px 32px;
+}
+
+.tile { margin: 0; }
+
+.tile__frame {
+  position: relative;
+  aspect-ratio: 3 / 2;
+  background: #0f1114;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tile__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  /* Tier 1 is 160x120, so it is always being scaled up in a 168px+ tile.
+   * Smoothing beats the nearest-neighbour crunch a browser would otherwise
+   * give a thumbnail this small (see the note in EXECUTION_PLAN.md §8). */
+  image-rendering: auto;
+}
+
+.tile__caption {
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tile__badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: rgba(16, 18, 21, 0.86);
+}
+
+.tile__raw {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  background: rgba(16, 18, 21, 0.86);
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+}
+
+/* The four dedup states, drawn so that no two of them can be mistaken for
+ * each other. This is the acceptance criterion, in CSS. */
+
+.tile--new .tile__badge { display: none; }
+
+.tile--likely-imported .tile__frame { border: 1px dashed var(--likely); }
+.tile--likely-imported .tile__image { opacity: 0.42; filter: grayscale(0.5); }
+.tile--likely-imported .tile__badge { color: var(--likely); }
+
+.tile--imported .tile__image { opacity: 0.28; filter: grayscale(1); }
+.tile--imported .tile__badge { color: var(--imported); }
+
+.tile--not-imported .tile__frame { border-color: var(--rescued); }
+.tile--not-imported .tile__badge { color: var(--rescued); }
+
+.tile--broken .tile__frame::after {
+  content: "no preview";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--bad);
+  font-size: 11px;
+}
+
+.empty { margin: 18px; color: var(--text-dim); }
+
+/* ------------------------------------------------------ the culling view */
+
+/* A single photograph, as large as the window allows, and as little else as
+ * the job permits. Everything on this screen that is not the frame competes
+ * with the frame for the judgement being made about it. */
+
+.cull-body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.bar__position {
+  font-family: ui-monospace, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.bar__filename { font-family: ui-monospace, Consolas, monospace; color: var(--text-dim); }
+.bar__tally { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 10px 14px;
+  background: #0d0f12;
+}
+
+.stage__image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  /* No transition on opacity: a fade means judging a photograph that is still
+   * arriving, and at 925 frames that is 925 small misjudgements. */
+  opacity: 1;
+}
+.stage__image.is-loading { opacity: 0.15; }
+
+.stage__message {
+  position: absolute;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.verdict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 18px;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--line);
+}
+
+.verdict__chip {
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+.verdict__chip--keep { border-color: var(--new); color: var(--new); }
+.verdict__chip--skip { border-color: var(--imported); color: var(--imported); }
+.verdict__chip--undecided { border-style: dashed; }
+
+.verdict__rating { color: var(--accent); letter-spacing: 2px; }
+.verdict__raw {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.verdict__progress { color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.warning, .notice {
+  margin: 0;
+  padding: 8px 18px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+}
+.warning { background: #3a2a18; color: #f0c98a; }
+.warning--bad { background: #3a1e1a; color: #f0a694; }
+.notice { background: #1b2430; color: #9dc0e4; }
+
+.help {
+  position: fixed;
+  right: 18px;
+  bottom: 60px;
+  width: 340px;
+  padding: 14px 18px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.help h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; }
+.help dl { display: grid; grid-template-columns: 74px 1fr; gap: 4px 10px; margin: 0; }
+.help dt { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+.help dd { margin: 0; color: var(--text-dim); }
+.help__note { margin: 12px 0 0; color: var(--text-dim); font-size: 12px; }
+.help__note code { color: var(--text); }
+
+/* A tile that can be culled is a link into the cull view; one that cannot is
+ * not, because an already-imported frame is deliberately not on offer (C-3). */
+.tile__link { display: block; color: inherit; text-decoration: none; }
+.tile__link:focus-visible .tile__frame { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tile__link:hover .tile__frame { border-color: var(--accent); }
+
+/* ------------------------------------------------------------ the import */
+
+/* Two steps, and the second one is the only button in this app that writes a
+ * photograph anywhere. It says "Import" and it is green; everything else is
+ * grey. Planning first is not ceremony — it is the only chance to read the
+ * names and the total before 15 GB of copying starts. */
+
+.importer {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.importer__row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.importer__note { color: var(--text-dim); font-size: 13px; }
+.importer__note--bad { color: #f0c98a; }
+
+.button--go { border-color: var(--new); color: var(--new); }
+.button--go:hover { background: color-mix(in srgb, var(--new) 18%, #272b33); }
+
+.importer__sample,
+.importer__problems {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: var(--text-dim);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+.importer__problems { color: #f0a694; }
+
+/* ------------------------------------------------------------ tagging */
+/*
+ * The layout is FR-3.3 and FR-3.4 argued out in CSS. The session form is
+ * always on screen and takes the width; a single frame disagreeing with its
+ * outing is a sheet you have to open. Typing a location fifty-four times is
+ * the failure this page exists to prevent, so the path that does it once is
+ * the one that is never more than a click away.
+ */
+
+/* Not scoped to one page: the tagging bar and the library bar both carry a
+ * line of counts, and a second copy of this rule is a second chance to
+ * drift. */
+.bar__note { color: var(--text-dim); font-size: 12px; }
+
+.banner {
+  margin: 0;
+  padding: 10px 18px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+}
+.banner--bad { background: #3a211d; color: #f0b3a8; }
+
+.tag {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: 0;
+  align-items: start;
+  min-height: calc(100vh - 42px);
+}
+
+.tag__list {
+  padding: 14px;
+  border-right: 1px solid var(--line);
+  position: sticky;
+  top: 42px;
+  max-height: calc(100vh - 42px);
+  overflow-y: auto;
+}
+
+.tag__panel { padding: 18px 22px; }
+
+.tag__heading {
+  margin: 14px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.tag__hint { margin: 4px 0 10px; color: var(--text-dim); font-size: 12px; }
+
+.days { list-style: none; margin: 0; padding: 0; }
+
+.day { margin-bottom: 2px; }
+
+.day__button {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 8px;
+  width: 100%;
+  padding: 7px 9px;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.day__button:hover { background: var(--bg-raised); }
+.day__button--on { background: var(--bg-raised); border-color: var(--accent); }
+
+.day__date { font-variant-numeric: tabular-nums; }
+.day__count { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.day__where { grid-column: 1 / -1; font-size: 12px; color: var(--text-dim); }
+
+/* The two states worth telling apart at a glance: a day nobody has said
+ * anything about, and a suggestion waiting to be accepted or declined. */
+.day__where--untagged { color: var(--likely); }
+.day__where--split { color: var(--rescued); }
+
+.day__actions { display: flex; gap: 6px; padding: 0 9px 8px; }
+
+/* ------------------------------------------------------------- fields */
+
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 14px;
+  max-width: 900px;
+  margin-bottom: 18px;
+}
+
+.field { display: flex; flex-direction: column; gap: 4px; }
+
+.field__label {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.field__input {
+  padding: 7px 9px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+}
+.field__input:focus { outline: none; border-color: var(--accent); }
+
+.fields__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.fields__actions .tag__hint { margin: 0; }
+
+.panel__head h2 { margin: 0 0 2px; font-size: 18px; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------------------- frames */
+
+.panel__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.frame { margin: 0; }
+
+.frame__button {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+}
+.frame__button:hover { border-color: var(--accent); }
+
+.frame__image { display: block; width: 100%; aspect-ratio: 3 / 2; object-fit: cover; }
+
+.frame__rating {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.62);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+/* An override is the exception (FR-3.4), so it is labelled rather than left
+ * to be inferred from a frame looking no different to its neighbours. */
+.frame__override {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  max-width: 85%;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px dashed var(--rescued);
+  color: var(--rescued);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frame__caption {
+  padding-top: 3px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------- sheet */
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.sheet__box {
+  width: min(680px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 18px 20px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.sheet__head { display: flex; align-items: center; gap: 12px; }
+.sheet__head h2 { margin: 0; font-size: 16px; flex: 1; }
+
+@media (max-width: 760px) {
+  .tag { grid-template-columns: 1fr; }
+  .tag__list { position: static; max-height: none; border-right: none;
+               border-bottom: 1px solid var(--line); }
+}
+
+/* ------------------------------------------------------------ library */
+/*
+ * The dashboard (WU-4.2). Same two-column shape as the tagging screen, for
+ * the same reason: the thing you choose from stays still on the left while
+ * the thing you are looking at changes on the right.
+ *
+ * The panel is deliberately quiet. Every row is a number next to a word, and
+ * the only row that is allowed to shout is one that is switched on — because
+ * the question a filter panel has to answer at a glance is "what am I
+ * looking at", and that is the set of rows that are on.
+ */
+
+.library {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) 1fr;
+  align-items: start;
+  min-height: calc(100vh - 42px);
+}
+
+.library__filters {
+  padding: 14px;
+  border-right: 1px solid var(--line);
+  position: sticky;
+  top: 42px;
+  max-height: calc(100vh - 42px);
+  overflow-y: auto;
+}
+
+.filters__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.filters__head .tag__heading { margin-top: 0; }
+
+.library__results { padding: 14px 0 0; min-width: 0; }
+
+.library__summary {
+  margin: 0 18px 12px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.library__more {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 18px 40px;
+}
+
+.library__more .tag__hint { margin: 0; }
+
+/* ------------------------------------------------------------- facets */
+
+.facet { margin-bottom: 14px; }
+
+.facet__name {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.facet__values { list-style: none; margin: 0; padding: 0; }
+
+.facet__row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.facet__pick {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.facet__pick:hover { background: var(--bg-raised); color: var(--text); }
+
+.facet__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.facet__count {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one row that is allowed to shout. */
+.facet__row--on .facet__pick {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-raised));
+  color: var(--text);
+}
+
+.facet__row--on .facet__count { color: var(--accent); }
+
+.facet__clear {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.facet__clear:hover { color: var(--bad); background: var(--bg-raised); }
+
+/* -------------------------------------------------------- library tiles */
+
+/* Not `.tile`: a card tile carries the four dedup states (WU-2.2) and a
+ * library tile carries none of them, so sharing the class would mean sharing
+ * rules that mean nothing here and inheriting any that are added later. */
+
+.card { margin: 0; }
+
+/* A tile opens the frame (WU-4.3), so it is a button — the whole picture is
+ * the target, and it is reachable by keyboard without anything being added. */
+.card__open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.card__open:hover .card__frame { border-color: var(--accent); }
+.card__open:focus-visible .card__frame {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.card__frame {
+  display: block;
+  position: relative;
+  aspect-ratio: 3 / 2;
+  background: #0f1114;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.card__image { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.card__frame--broken::after {
+  content: "no preview";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--bad);
+  font-size: 11px;
+}
+
+.card__rating {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: rgba(16, 18, 21, 0.86);
+}
+
+.card__raw {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  background: rgba(16, 18, 21, 0.86);
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+}
+
+.card__caption {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.card__when { font-family: ui-monospace, Consolas, monospace; flex: none; }
+
+/* A date that was guessed must not look like one that was read (FR-8.2a). */
+.card__when--inferred { color: var(--likely); cursor: help; }
+
+.card__where {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------ the detail view */
+
+/* FR-7.5: one photograph as large as the window allows, with everything known
+ * about it down the right. It covers the grid rather than sitting in it — a
+ * frame being looked at is the whole screen's job, the same argument the
+ * culling view makes, and the grid underneath keeps its scroll position for
+ * when Escape gives it back. */
+
+.detail {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.detail__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
+}
+
+.detail__body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 330px;
+  min-height: 0;
+}
+
+.detail__stage {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  padding: 14px;
+  background: #0b0c0e;
+}
+
+.detail__image {
+  max-width: 100%;
+  max-height: calc(100vh - 90px);
+  object-fit: contain;
+  transition: opacity 0.12s linear;
+}
+
+/* The frame being replaced should read as loading rather than as gone, so the
+ * old one dims instead of disappearing. */
+.detail__image.is-loading { opacity: 0.25; }
+
+.detail__message { color: var(--bad); font-size: 13px; }
+
+.detail__side {
+  overflow-y: auto;
+  padding: 14px 16px 24px;
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.detail__side .fields { margin: 0; }
+
+/* Which photographs a form reaches. The one thing somebody has to be able to
+ * read before pressing Save, because one of these forms is fifty-four
+ * photographs (FR-3.3). */
+.detail__scope {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------- the stars */
+
+.stars { display: flex; gap: 2px; align-items: center; }
+
+.star {
+  padding: 0 3px;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-size: 19px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.star:hover { color: var(--accent); }
+.star--on { color: var(--accent); }
+.star--clear { font-size: 14px; margin-left: 6px; }
+.star:disabled { opacity: 0.3; cursor: default; }
+
+/* -------------------------------------------------------------- the facts */
+
+.facts { margin: 0; font-size: 12px; }
+
+.facts__row {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+  border-top: 1px solid var(--line);
+}
+
+.facts__name { color: var(--text-dim); }
+
+.facts__value {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 860px) {
+  .detail__body { grid-template-columns: 1fr; }
+  .detail__side { border-left: 0; border-top: 1px solid var(--line); }
+  .detail__image { max-height: 52vh; }
+}
+
+/* ------------------------------------------------------------- triage */
+
+/* FR-7.6's backlog. A list of days, because that is the unit the work is done
+ * in — one row is one outing to name, not one photograph to type a place on
+ * fifty-four times. */
+
+.triage { max-width: 860px; margin: 0 auto; padding: 18px 22px 60px; }
+
+.triage__head { margin-bottom: 22px; }
+
+.triage__headline {
+  margin: 0 0 10px;
+  font-size: 19px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The bar fills as the library is tagged, so it grows rather than drains —
+ * the number worth watching is how much is done, not how much is left. */
+.triage .progress { max-width: none; margin-bottom: 8px; }
+.triage .progress__bar { background: var(--new); }
+
+.backlog { list-style: none; margin: 0; padding: 0; }
+
+.backlog__day {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: var(--bg-raised);
+}
+
+.backlog__day--open { border-color: var(--accent); }
+
+.backlog__open {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.backlog__open:hover { color: var(--accent); }
+
+.backlog__date { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.backlog__count {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.backlog__when {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.backlog__state { color: var(--text-dim); font-size: 12px; }
+
+/* A row with a question in it rather than a blank to fill: it is answered
+ * here, but with two buttons instead of four fields. */
+.backlog__state--shape { color: var(--rescued); }
+
+.backlog__shape { padding-top: 12px; }
+.backlog__gap { margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+
+.backlog__choice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.backlog__finer { margin: 10px 0 0; }
+
+.backlog__covers {
+  display: flex;
+  gap: 4px;
+  padding: 0 12px 10px;
+  overflow: hidden;
+}
+
+.backlog__cover {
+  width: 104px;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  background: #0f1114;
+}
+
+.backlog__cover:hover { border-color: var(--accent); }
+
+.backlog__panel { padding: 0 12px 12px; border-top: 1px solid var(--line); }
+.backlog__panel .fields { margin-top: 12px; }
+.backlog__note { margin: 0; }
+
+@media (max-width: 720px) {
+  .library { grid-template-columns: 1fr; }
+  .library__filters {
+    position: static;
+    max-height: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}

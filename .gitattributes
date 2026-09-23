@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+# Fixture photos are binary — never let line-ending normalisation near them,
+# or the content hashes the whole catalog depends on would change.
+*.JPG binary
+*.jpg binary
+*.RAF binary
+*.raf binary
+*.xmp text eol=lf

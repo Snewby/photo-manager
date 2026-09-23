@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Manager — cull</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23222'/><circle cx='8' cy='9' r='3.5' fill='none' stroke='%23e8b64c' stroke-width='1.5'/><rect x='5' y='3' width='6' height='2' rx='1' fill='%23e8b64c'/></svg>">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="cull-body">
+
+<header class="bar">
+  <h1>Cull</h1>
+  <span id="position" class="bar__position">—</span>
+  <span id="filename" class="bar__filename">—</span>
+  <div class="bar__spacer"></div>
+  <span id="tally" class="bar__tally">—</span>
+  <button id="to-grid" type="button" class="button button--quiet">Grid</button>
+  <button id="help-toggle" type="button" class="button button--quiet" aria-label="Keys">?</button>
+</header>
+
+<!-- FR-4.5. Hidden until it is true, because a warning that is always on -->
+<!-- screen is not a warning. -->
+<div id="space-warning" class="warning" hidden></div>
+<div id="error" class="warning warning--bad" hidden></div>
+<div id="resumed" class="notice" hidden></div>
+
+<main class="stage">
+  <img id="preview" class="stage__image" alt="">
+  <p id="stage-message" class="stage__message"></p>
+</main>
+
+<footer class="verdict">
+  <span id="verdict-chip" class="verdict__chip">undecided</span>
+  <span id="rating" class="verdict__rating" title="0-5 (FR-4.2)"></span>
+  <span id="raw-chip" class="verdict__raw" hidden>+ RAW</span>
+  <div class="bar__spacer"></div>
+  <span id="progress" class="verdict__progress"></span>
+</footer>
+
+<!-- Five keys to learn, which is FR-4.2's actual target. -->
+<aside id="help" class="help" hidden>
+  <h2>Keys</h2>
+  <dl>
+    <dt>K</dt><dd>keep, and move on</dd>
+    <dt>X</dt><dd>skip, and move on</dd>
+    <dt>1 – 5</dt><dd>keep at that rating, and move on</dd>
+    <dt>0</dt><dd>keep, no rating, and move on</dd>
+    <dt>R</dt><dd>also keep the RAF for this frame</dd>
+    <dt>← →</dt><dd>back and forward without deciding</dd>
+    <dt>U</dt><dd>undo this frame's decision</dd>
+    <dt>G / Esc</dt><dd>back to the grid</dd>
+  </dl>
+  <p class="help__note">
+    Nothing is copied or deleted here. Decisions are written to
+    <code>state\cull\</code> as you make them and are still there after a
+    restart; the import is a later step.
+  </p>
+</aside>
+
+<script src="/static/cull.js"></script>
+</body>
+</html>

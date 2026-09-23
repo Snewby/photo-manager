@@ -1,0 +1,50 @@
+[project]
+name = "photo-manager"
+version = "0.1.0"
+description = "Local-only ingest, culling and cataloguing for a Fujifilm X-T30 library"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pillow",
+]
+
+[project.optional-dependencies]
+# Not runtime dependencies: Starlette's TestClient is built on httpx2, which is
+# what lets the web app be exercised in-process without binding a port. (Plain
+# `httpx` also works and is what Starlette deprecated; httpx2 is the one that
+# does not warn on every run.)
+dev = [
+    "pytest",
+    "httpx2",
+    # pyexiv2 wraps exiv2 — the C++ library digiKam is built on. It is a test
+    # dependency and nothing more: the sidecar writer uses the standard
+    # library on purpose, so that reading its output back with exiv2 is a
+    # genuine interoperability check (D-1) rather than one implementation
+    # agreeing with itself.
+    "pyexiv2",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The frontend is data, not code, so it needs saying explicitly or a non-
+# editable install would ship a web package with no page in it.
+[tool.setuptools.package-data]
+photo_manager = ["web/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "private/tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+markers = [
+    # Anything that needs hardware or the real library is opt-in and skipped
+    # when absent, so the suite is always green on a machine with no card
+    # (EXECUTION_PLAN.md §4.2).
+    "needs_card: requires the memory card to be inserted",
+    "needs_library: requires the real library root to be present",
+]
