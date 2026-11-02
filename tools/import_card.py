@@ -29,7 +29,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from photo_manager.cards import detect_card, scan_card  # noqa: E402
 from photo_manager.catalog import Catalog  # noqa: E402
 from photo_manager.config import ConfigError, Settings  # noqa: E402
-from photo_manager.culling import CullStore, Verdict, card_key  # noqa: E402
+from photo_manager.culling import CullStore, Verdict, card_key, known_serials  # noqa: E402
 from photo_manager.importing import (  # noqa: E402
     ImportFailed,
     PlannedImport,
@@ -74,7 +74,9 @@ def main(argv: list[str] | None = None) -> int:
     assert location.dcim_root is not None
 
     scan = scan_card(settings, location=location)
-    store = CullStore.for_card(settings, card_key(location.dcim_root))
+    store = CullStore.for_card(
+        settings, card_key(location.dcim_root, known=known_serials(settings))
+    )
     resumed = store.resume(scan)
     keepers = {
         index: decision for index, decision in resumed.decisions.items()

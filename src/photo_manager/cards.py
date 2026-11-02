@@ -234,14 +234,15 @@ class CardScan:
 _DRIVE_REMOVABLE = 2
 _DRIVE_FIXED = 3
 
+#: Where macOS mounts every volume, the startup disk included (as a link to /).
+_MAC_VOLUMES = Path("/Volumes")
+
 
 def removable_volumes() -> tuple[Path, ...]:
     """Every removable volume currently attached, as drive roots.
 
-    Windows only in any real sense; elsewhere this returns nothing and
-    :func:`detect_card` falls back to the configured path. That is honest for a
-    single-machine, Windows-only app (REQUIREMENTS.md §3) and keeps the tests
-    running on any platform, since they inject their own volume list.
+    Windows only: macOS has no drive types to sort by, so there this returns
+    nothing and :func:`candidate_volumes` lists ``/Volumes`` instead.
     """
     return tuple(root for root, kind in _volumes() if kind == _DRIVE_REMOVABLE)
 
@@ -254,7 +255,12 @@ def candidate_volumes() -> tuple[Path, ...]:
     exact "the reader moved" failure this function exists to survive. The
     system drive is never probed: the library lives there and a ``DCIM`` folder
     on it would not be a camera card.
+
+    On macOS there are no letters and no drive types, only ``/Volumes`` — see
+    :func:`_mac_volumes`.
     """
+    if sys.platform == "darwin":
+        return _mac_volumes(_MAC_VOLUMES)
     system = Path(os.environ.get("SystemDrive", "C:") + "\\")
     removable = [root for root, kind in _volumes() if kind == _DRIVE_REMOVABLE]
     fixed = [
@@ -278,6 +284,41 @@ def _volumes() -> list[tuple[Path, int]]:
         root = f"{letter}:\\"
         found.append((Path(root), kernel32.GetDriveTypeW(root)))
     return found
+
+
+def _mac_volumes(root: Path) -> tuple[Path, ...]:
+    """Every volume mounted under *root* except the startup disk, by name.
+
+    A card in a USB reader is one more entry in ``/Volumes``, named after its
+    label rather than a letter. The startup disk is there too, as a link to
+    ``/``, and is left out — by where it leads and by device number — for the
+    same reason the system drive is on Windows; so are hidden entries such as
+    ``.timemachine``.
+    """
+    try:
+        system = _startup_device()
+        entries = sorted(root.iterdir(), key=lambda p: p.name.casefold())
+    except OSError:
+        return ()
+    found: list[Path] = []
+    for entry in entries:
+        if entry.name.startswith("."):
+            continue
+        try:
+            if not entry.is_dir() or entry.resolve() == Path("/"):
+                continue
+            if entry.stat().st_dev == system:
+                continue
+        except OSError:
+            continue
+        found.append(entry)
+    return tuple(found)
+
+
+def _startup_device() -> int:
+    # APFS gives the system and data volumes one st_dev, so this is every
+    # path on the internal disk — the library's included — not just /.
+    return os.stat("/").st_dev
 
 
 def detect_card(
@@ -313,6 +354,7 @@ def detect_card(
                 f"({len(folders)} image folder{'' if len(folders) == 1 else 's'}: "
                 f"{', '.join(f.name for f in folders)})."
                 + (f" Also saw {', '.join(str(p) for p in rest)}." if rest else "")
+                + _mount_warning(first)
             ),
         )
 
@@ -372,7 +414,32 @@ def _from_configured(
             f"Card found at {configured} "
             f"({len(folders)} image folder{'' if len(folders) == 1 else 's'}: "
             f"{', '.join(f.name for f in folders)})."
+            + _mount_warning(configured)
         ),
+    )
+
+
+def _mount_warning(dcim_root: Path) -> str:
+    """A sentence when macOS has the card mounted read-write, else nothing.
+
+    This module writes nothing to a card, but on macOS that is not the whole of
+    §4.1: mounting a FAT or exFAT volume read-write is itself a write — it
+    gains a ``.fseventsd`` folder within seconds, exFAT's dirty flag is set,
+    and Finder adds ``.DS_Store`` and ``._*`` files as it is browsed. Measured
+    on FAT32 and exFAT images, 2026-11-02; a read-only mount changed no byte.
+    The app cannot remount the card itself, so it says so on every scan.
+    """
+    if sys.platform != "darwin":
+        return ""
+    try:
+        read_only = bool(os.statvfs(dcim_root).f_flag & os.ST_RDONLY)
+    except (OSError, AttributeError):
+        return ""
+    if read_only:
+        return ""
+    return (
+        " It is mounted read-write, so macOS can write to it (.fseventsd, "
+        "._ files). Eject it and mount it read-only - see the README."
     )
 
 
@@ -476,6 +543,13 @@ def _group(folder: Path) -> tuple[dict[str, dict[str, _Half]], list[Path]]:
             if not entry.is_file():
                 continue
             path = Path(entry.path)
+            if entry.name.startswith("._"):
+                # An AppleDouble file: macOS writes one beside a file it copies
+                # or tags on FAT/exFAT. ``._DSCF0001.JPG`` has a JPEG's suffix
+                # and four kilobytes of metadata in it, and paired by suffix it
+                # would be a photograph that is not one.
+                ignored.append(path)
+                continue
             suffix = path.suffix.casefold()
             half = _Half(path, _entry_size(entry))
             if suffix in _JPEG_SUFFIXES:

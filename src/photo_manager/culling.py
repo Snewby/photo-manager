@@ -50,9 +50,14 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import plistlib
+import re
 import shutil
 import string
+import struct
+import subprocess
 import sys
+import uuid
 from collections.abc import Container, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,6 +73,7 @@ __all__ = [
     "Resume",
     "Tally",
     "card_key",
+    "known_serials",
     "volume_serial",
     "tally",
     "FREE_SPACE_MARGIN",
@@ -155,14 +161,19 @@ class PhotoKey:
 # ----------------------------------------------------------------------
 
 
-def volume_serial(path: str | Path) -> str | None:
+def volume_serial(path: str | Path, *, known: Iterable[str] = ()) -> str | None:
     """The volume serial number of the volume *path* sits on, as hex.
 
-    Windows only in any real sense, which matches the rest of this app
-    (REQUIREMENTS.md §3). Returns None anywhere it cannot be determined, and
-    :func:`card_key` falls back rather than failing — a weaker key is better
-    than refusing to remember anything.
+    Returns None anywhere it cannot be determined, and :func:`card_key` falls
+    back rather than failing — a weaker key is better than refusing to
+    remember anything.
+
+    On macOS the serial is never reported, only a UUID derived from it — see
+    :func:`_mac_volume_identity`, which is why this takes the serials already
+    *known*: one of those can be proved, where an unknown one cannot be read.
     """
+    if sys.platform == "darwin":
+        return _mac_volume_identity(path, known)
     if sys.platform != "win32":
         return None
     import ctypes
@@ -181,7 +192,94 @@ def volume_serial(path: str | Path) -> str | None:
     return f"{serial.value:08x}" if ok else None
 
 
-def card_key(dcim_root: str | Path, *, serial: str | None = None) -> str:
+#: The namespace macOS's msdosfs and exfat derive a volume's UUID in.
+_APPLE_VOLUME_NAMESPACE = uuid.UUID("b3e20f39-f292-11d6-97a4-00306543ecac")
+
+#: How far below the partition's size a FAT boot sector's sector count is
+#: looked for. A formatter may leave a few sectors unused (64 MiB FAT32: two).
+_FAT_SECTOR_SLACK = 1 << 16
+
+
+def _mac_volume_identity(path: str | Path, known: Iterable[str]) -> str | None:
+    """A FAT or exFAT card's identity on macOS: its serial if provable, else its UUID.
+
+    macOS never reports a FAT or exFAT volume serial. It reports ``VolumeUUID``,
+    a version-3 UUID it derives from the serial — MD5 over a fixed namespace and
+    the boot sector's four serial bytes, plus for FAT the sector count — so the
+    serial cannot be read back out, and the raw device that holds it needs root.
+    Checked on 2026-11-02 against FAT32 and exFAT images formatted on macOS,
+    whose boot sectors could be read directly.
+
+    What *can* be done is to check a serial already known. Every card culled on
+    Windows is known by its serial — it is in the decision file's name — so such
+    a card comes back as the same eight digits and finds its decisions. A card
+    known by nothing is named by the UUID itself, which changes on a reformat
+    exactly as the serial does, and that is the property §5.3 rests on.
+
+    Anything that is not FAT or exFAT, or that ``diskutil`` cannot answer for,
+    is None: the path fallback, as before.
+    """
+    info = _diskutil_info(path)
+    if not info or info.get("FilesystemType") not in ("msdos", "exfat"):
+        return None
+    try:
+        volume_uuid = uuid.UUID(str(info.get("VolumeUUID")))
+    except ValueError:
+        return None
+    try:
+        sectors = int(info.get("Size", 0)) // int(info.get("DeviceBlockSize") or 512)
+    except (TypeError, ValueError):
+        sectors = 0
+    for serial in known:
+        if _proves(serial, volume_uuid, info["FilesystemType"], sectors):
+            return serial.casefold()
+    return str(volume_uuid)
+
+
+def _proves(serial: str, volume_uuid: uuid.UUID, kind: str, sectors: int) -> bool:
+    """Whether macOS would have derived *volume_uuid* from *serial*."""
+    try:
+        packed = struct.pack("<I", int(serial, 16))
+    except (ValueError, struct.error):
+        return False
+    if kind == "exfat":
+        return uuid.uuid3(_APPLE_VOLUME_NAMESPACE, packed) == volume_uuid
+    # FAT hashes the boot sector's total-sector count too, which nothing
+    # unprivileged reports — but it is the partition's size or a little under.
+    return any(
+        uuid.uuid3(_APPLE_VOLUME_NAMESPACE, packed + struct.pack("<I", total)) == volume_uuid
+        for total in range(sectors, max(sectors - _FAT_SECTOR_SLACK, 0), -1)
+    )
+
+
+def _diskutil_info(path: str | Path) -> dict | None:
+    """``diskutil info`` for the volume *path* is on, or None."""
+    mount = Path(path).resolve()
+    while not os.path.ismount(mount) and mount != mount.parent:
+        mount = mount.parent
+    try:
+        result = subprocess.run(
+            ["diskutil", "info", "-plist", str(mount)],
+            capture_output=True, timeout=15, check=True,
+        )
+        return plistlib.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, plistlib.InvalidFileException):
+        return None
+
+
+def known_serials(settings: Settings) -> tuple[str, ...]:
+    """The serials of every card with a decision file — what macOS can check a
+    card against, because it cannot read one (:func:`_mac_volume_identity`)."""
+    names = (path.name for path in (settings.state_dir / "cull").glob("volume-*.jsonl"))
+    return tuple(sorted(
+        match.group(1) for name in names
+        if (match := re.fullmatch(r"volume-([0-9a-f]{8})\.jsonl", name))
+    ))
+
+
+def card_key(
+    dcim_root: str | Path, *, serial: str | None = None, known: Iterable[str] = ()
+) -> str:
     """A filename-safe identity for the card at *dcim_root*.
 
     The volume serial where there is one, because it survives the card moving
@@ -193,8 +291,11 @@ def card_key(dcim_root: str | Path, *, serial: str | None = None) -> str:
     letter reads as a different card and starts again. That is the safe
     direction to be wrong in (work repeated, never work misapplied), and the
     name says which one you got.
+
+    On macOS a card arrives as its eight-digit serial when that serial is one of
+    *known* (pass :func:`known_serials`), and otherwise as its volume UUID.
     """
-    resolved = serial if serial is not None else volume_serial(dcim_root)
+    resolved = serial if serial is not None else volume_serial(dcim_root, known=known)
     if resolved:
         return f"volume-{resolved}"
     safe = "".join(

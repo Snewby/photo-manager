@@ -113,7 +113,10 @@ def main(argv: list[str] | None = None) -> int:
 
     files = sorted(p for p in source.rglob("*") if p.is_file())
     total_bytes = sum(p.stat().st_size for p in files)
-    free = shutil.disk_usage(destination.anchor).free
+    # The destination's own volume. `anchor` is '/' for every path on macOS,
+    # which would have reported the internal disk's free space for an
+    # external drive; _check_target has just created the folder, so ask it.
+    free = shutil.disk_usage(destination).free
 
     print(f"Source     : {source}")
     print(f"Snapshot   : {snapshot}")
@@ -159,9 +162,14 @@ def _check_target(source: Path, destination: Path, snapshot: Path) -> None:
             f"{destination} is inside the library root. A copy of something, filed "
             f"inside that same something, is not a backup of it."
         )
-    if destination.drive.upper() == resolved.drive.upper():
+    destination_device = _device(destination)
+    if destination_device is None:
         raise ValueError(
-            f"{destination} is on {destination.drive}, the same volume as the library. "
+            f"No part of {destination} exists. Is the drive attached?"
+        )
+    if destination_device == _device(resolved):
+        raise ValueError(
+            f"{destination} is on the same volume as the library. "
             f"WU-1.5's gate asks for separate physical media, whose entire purpose is "
             f"surviving that volume failing. Use an external drive."
         )
@@ -172,6 +180,26 @@ def _check_target(source: Path, destination: Path, snapshot: Path) -> None:
         )
 
     destination.mkdir(parents=True, exist_ok=True)
+
+
+def _device(path: Path) -> int | None:
+    """The device number of the volume *path* is on, or would be created on.
+
+    By ``st_dev`` rather than ``Path.drive``: the drive letter answered this on
+    Windows, but it is ``''`` for every path on macOS, so comparing drives
+    refused every destination there — the external drive included. ``st_dev``
+    is the volume on both (Python fills it from the volume serial on Windows).
+    The destination usually does not exist yet, so its nearest existing
+    ancestor is what gets asked; None means nothing on that path exists at all,
+    which on either platform means the drive is not attached.
+    """
+    for candidate in (path, *path.parents):
+        try:
+            return candidate.stat().st_dev
+        except OSError:
+            # Absent, or a Windows drive letter with nothing in the reader.
+            continue
+    return None
 
 
 def _manifest_hashes(settings: Settings) -> dict[str, str]:

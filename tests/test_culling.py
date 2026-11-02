@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from photo_manager.cards import CardLocation, CardPhoto, CardScan, CardStatus, Dedup
+from photo_manager import culling
 from photo_manager.config import Settings
 from photo_manager.culling import (
     FREE_SPACE_MARGIN,
@@ -33,6 +35,7 @@ from photo_manager.culling import (
     PhotoKey,
     Verdict,
     card_key,
+    known_serials,
     tally,
     volume_serial,
 )
@@ -127,7 +130,106 @@ def test_a_card_key_is_always_a_usable_filename() -> None:
 
 def test_the_real_volume_serial_is_readable_or_honestly_absent() -> None:
     serial = volume_serial(Path.cwd())
-    assert serial is None or len(serial) == 8
+    assert serial is None or re.fullmatch(r"[0-9a-f]{8}|[0-9a-f-]{36}", serial)
+
+
+# ----------------------------------------------------------------------
+# Which card is this, on macOS (WU-5.1)
+#
+# macOS reports a FAT or exFAT volume's serial only as a UUID derived from it.
+# The vectors are disk images formatted on macOS 2026-11-02, whose boot
+# sectors were read directly and whose VolumeUUID diskutil reported.
+# ----------------------------------------------------------------------
+
+EXFAT_SERIAL, EXFAT_UUID = "6ae87a58", "9CF4369F-740D-314E-8918-31598FEFEDB1"
+FAT32_SERIAL, FAT32_UUID = "34d91322", "B542301D-04C7-36EB-BF46-64AC9A98AE19"
+#: The FAT32 image is 131,072 sectors; its boot sector says 131,070.
+FAT32_PARTITION_BYTES = 131_072 * 512
+
+
+@pytest.fixture
+def mac(monkeypatch: pytest.MonkeyPatch):
+    """macOS, with ``diskutil`` answering whatever the test says it does."""
+    monkeypatch.setattr(culling.sys, "platform", "darwin")
+    answer: dict = {}
+    monkeypatch.setattr(culling, "_diskutil_info", lambda path: dict(answer) or None)
+    return answer
+
+
+def exfat(volume_uuid: str = EXFAT_UUID) -> dict:
+    return {"FilesystemType": "exfat", "VolumeUUID": volume_uuid,
+            "Size": 64 * 2**20, "DeviceBlockSize": 512}
+
+
+def test_on_macos_a_card_culled_on_windows_keeps_its_key(mac: dict) -> None:
+    """exFAT: the UUID is derived from the serial alone, so a known serial is
+    proved and the card finds the decision file Windows named for it."""
+    mac.update(exfat())
+    assert card_key("/Volumes/Untitled/DCIM", known=["11112222", EXFAT_SERIAL]) == (
+        card_key("E:/DCIM", serial=EXFAT_SERIAL)
+    )
+
+
+def test_on_macos_a_fat32_card_is_proved_despite_a_sector_count_nobody_reports(
+    mac: dict,
+) -> None:
+    mac.update({"FilesystemType": "msdos", "VolumeUUID": FAT32_UUID,
+                "Size": FAT32_PARTITION_BYTES, "DeviceBlockSize": 512})
+    assert volume_serial("/Volumes/CARD/DCIM", known=[FAT32_SERIAL]) == FAT32_SERIAL
+
+
+def test_on_macos_a_reformatted_card_is_a_different_card(mac: dict) -> None:
+    """The event §5.3's guard exists for: the same name, the same mount point,
+    and a new serial — so a new UUID, which proves no known serial."""
+    mac.update(exfat("0429D11D-A8EA-36DC-8DA4-4B201169189B"))
+    key = card_key("/Volumes/Untitled/DCIM", known=[EXFAT_SERIAL])
+
+    assert key != card_key("E:/DCIM", serial=EXFAT_SERIAL)
+    assert key.startswith("volume-")
+
+
+def test_on_macos_a_new_card_is_named_by_its_uuid_wherever_it_mounts(mac: dict) -> None:
+    mac.update(exfat())
+    first = card_key("/Volumes/Untitled/DCIM")
+    again = card_key("/Volumes/Untitled 1/DCIM")
+
+    assert first == again == f"volume-{EXFAT_UUID.lower()}"
+    assert set(first) <= set("abcdefghijklmnopqrstuvwxyz0123456789-_")
+
+
+def test_on_macos_a_serial_is_not_proved_by_the_wrong_filesystem(mac: dict) -> None:
+    """exFAT hashes the serial alone and FAT hashes the sector count too;
+    checking one by the other's rule must not match."""
+    mac.update({**exfat(), "FilesystemType": "msdos"})
+    assert volume_serial("/Volumes/X/DCIM", known=[EXFAT_SERIAL]) != EXFAT_SERIAL
+
+
+@pytest.mark.parametrize("answer", [
+    {},                                                    # diskutil failed
+    {"FilesystemType": "apfs", "VolumeUUID": EXFAT_UUID},  # not a camera card
+    {"FilesystemType": "exfat", "VolumeUUID": "garbage"},
+    {"FilesystemType": "exfat"},
+])
+def test_on_macos_anything_unprovable_falls_back_to_the_path(
+    mac: dict, answer: dict
+) -> None:
+    mac.update(answer)
+    assert card_key("/Volumes/Untitled/DCIM", known=[EXFAT_SERIAL]).startswith("path-")
+
+
+def test_known_serials_are_the_cards_with_decision_files(settings: Settings) -> None:
+    cull = settings.state_dir / "cull"
+    cull.mkdir(parents=True)
+    for name in ("volume-36ab0c1d.jsonl", "volume-0000ffff.jsonl",
+                 f"volume-{EXFAT_UUID.lower()}.jsonl", "path-d-dcim.jsonl",
+                 "volume-36ab0c1d.jsonl.bak"):
+        (cull / name).write_text("", encoding="utf-8")
+
+    assert known_serials(settings) == ("0000ffff", "36ab0c1d")
+
+
+def test_known_serials_with_no_decisions_yet_is_empty(settings: Settings) -> None:
+    assert known_serials(settings) == ()
 
 
 # ----------------------------------------------------------------------

@@ -47,7 +47,9 @@ from dataclasses import dataclass, field
 from ..cards import CardPhoto, CardScan, Dedup, confirm_imports, scan_card
 from ..catalog import Catalog
 from ..config import Settings
-from ..culling import CullStore, Decision, PhotoKey, Resume, Tally, card_key, tally
+from ..culling import (
+    CullStore, Decision, PhotoKey, Resume, Tally, card_key, known_serials, tally,
+)
 from ..importing import ImportFailed, ImportOutcome, ImportPlan, execute_import, plan_import
 from ..thumbnails import ThumbnailCache, ThumbnailError, render_and_hash
 
@@ -341,7 +343,8 @@ class AppState:
             )
             if scan.location.found and scan.location.dcim_root is not None:
                 session.store = CullStore.for_card(
-                    self.settings, card_key(scan.location.dcim_root)
+                    self.settings,
+                    card_key(scan.location.dcim_root, known=known_serials(self.settings)),
                 )
                 session.resume = session.store.resume(scan)
                 session.decisions = dict(session.resume.decisions)

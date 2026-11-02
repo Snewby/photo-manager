@@ -60,6 +60,26 @@ def catalog(settings: Settings) -> Iterator[Catalog]:
         yield open_catalog
 
 
+@pytest.fixture
+def pyexiv2():
+    """exiv2, the third-party reader D-1's interoperability claim is checked against.
+
+    Skipped when absent — but ``importorskip`` only catches ImportError, and a
+    wheel that installs and then cannot load its compiled library (on macOS,
+    Homebrew's gettext missing) raises OSError instead, which would turn three
+    interoperability checks into failures that say nothing about sidecars. The
+    skip reason carries the loader's message, so the check going absent is
+    visible in ``-rs`` rather than silent.
+    """
+    try:
+        import pyexiv2 as module
+    except ImportError as error:
+        pytest.skip(f"pyexiv2 is not installed: {error}")
+    except OSError as error:
+        pytest.skip(f"pyexiv2 is installed but exiv2 will not load: {error}")
+    return module
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Make the synthetic fixture photographs if they are not there yet.
 

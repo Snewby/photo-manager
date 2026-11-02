@@ -364,16 +364,13 @@ def test_an_untagged_photograph_makes_an_almost_empty_sidecar(catalog: Catalog) 
 # ----------------------------------------------------------------------
 
 
-def test_every_property_is_read_back_by_exiv2(photo: Path) -> None:
+def test_every_property_is_read_back_by_exiv2(photo: Path, pyexiv2) -> None:
     """The whole of D-1, checked against a different implementation.
 
     exiv2 is not ours, is written in C++, and is what digiKam uses. If it can
     see all six of §5.2's properties in a file this module wrote, the claim
     that these tags survive this application is evidence rather than intent.
     """
-    pyexiv2 = pytest.importorskip(
-        "pyexiv2", reason="the third-party reader for D-1's interoperability claim",
-    )
     write_sidecar(photo, Sidecar(
         rating=4, location="St Aldo", people=("Alice", "Carol"),
         event="Beach day", tags=("seaside", "golden hour"),
@@ -397,9 +394,8 @@ def test_every_property_is_read_back_by_exiv2(photo: Path) -> None:
     assert xmp["Xmp.exif.GPSLongitude"] == "5,29.1234W"
 
 
-def test_exiv2_finds_nothing_unexpected_in_an_empty_sidecar(photo: Path) -> None:
+def test_exiv2_finds_nothing_unexpected_in_an_empty_sidecar(photo: Path, pyexiv2) -> None:
     """The other half: we are not writing properties nobody asked for."""
-    pyexiv2 = pytest.importorskip("pyexiv2")
     write_sidecar(photo, Sidecar())
 
     with pyexiv2.Image(str(sidecar_path(photo))) as image:

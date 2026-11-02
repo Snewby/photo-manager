@@ -9,6 +9,15 @@
       ],
       "port": 8000,
       "url": "http://127.0.0.1:8000"
+    },
+    {
+      "name": "photo-manager-macos",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": [
+        "tools/serve.py"
+      ],
+      "port": 8000,
+      "url": "http://127.0.0.1:8000"
     }
   ]
 }

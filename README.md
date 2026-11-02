@@ -3,8 +3,8 @@
 Local-only ingest, culling and cataloguing for a Fujifilm X-T30 library. Card in,
 cull the keepers, tag them, import, browse.
 
-Built for one person's own library and shared as it is. It runs on Windows (card
-detection uses the Windows volume APIs) and binds to localhost only.
+Built for one person's own library and shared as it is. It runs on Windows and
+macOS (see [On macOS](#on-macos)) and binds to localhost only.
 
 Comments throughout the code cite requirement and decision numbers — `FR-6.1`, `D-4`,
 `NFR-2`, `WU-3.5`. They point into a requirements document and build plan that are kept
@@ -23,6 +23,45 @@ Then edit `config.toml` — at minimum `library_root`. Nothing in the code assum
 drive letter, so moving the library to a bigger volume is a change to that one
 line.
 
+The commands in this README are written for Windows. On macOS the interpreter is
+`.venv/bin/python` and paths use `/`; the rest is the same.
+
+## On macOS
+
+```
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+cp config.example.toml config.toml
+```
+
+**Mount the card read-only, or macOS writes to it.** Mounting a FAT or exFAT
+volume read-write is itself a write: within seconds macOS adds a `.fseventsd`
+folder, exFAT's dirty flag is set while it is mounted, and Finder adds `.DS_Store`
+and `._*` files as you browse it. A read-only mount changes nothing. The simple way
+is the card's **lock switch**: slide it to *Lock* before inserting, and a reader that
+honours it makes macOS mount the card read-only. Check before trusting it:
+
+```
+mount | grep /Volumes/
+```
+
+The card's line should say `read-only`. If it does not, the reader ignores the
+switch — eject the card and use a different reader. (Remounting with
+`diskutil mount readOnly` afterwards is read-only from then on, but the first
+read-write mount has already written.) The app says so on every scan when it finds
+a card mounted read-write, and never treats a `._*` file as a photograph.
+
+Cards are found by probing `/Volumes` for a `DCIM` folder, and the startup disk is
+never probed. A card's identity — which decision file its culls go in — comes from
+`diskutil`: macOS reports a FAT or exFAT volume's serial only as a UUID derived from
+it, so a card culled on Windows is recognised by checking its known serial against
+that UUID, and a new card is named by the UUID itself. Both change when the card is
+reformatted in the camera, which is what stops old decisions landing on new photos.
+
+`pyexiv2`, the test-only reader for the XMP interoperability tests, needs
+Homebrew's `gettext` (`brew install gettext`); without it those three tests skip
+and say why.
+
 ## Tests
 
 ```
@@ -40,7 +79,8 @@ photographs.
 
 ## Three rules that don't bend
 
-1. **The memory card is read-only.** Never write, delete or rename on `D:`.
+1. **The memory card is read-only.** Never write, delete or rename on it — and on
+   macOS, mount it read-only (see [On macOS](#on-macos)).
 2. **Original photo bytes are never modified.** Metadata lives in SQLite and XMP
    sidecars beside the files.
 3. **Anything that moves or deletes real photos runs dry by default.**

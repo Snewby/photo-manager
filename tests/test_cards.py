@@ -22,6 +22,7 @@ from pathlib import Path
 import fixtures
 import pytest
 
+from photo_manager import cards
 from photo_manager.cards import (
     CardStatus,
     Dedup,
@@ -236,6 +237,102 @@ def test_volume_probing_runs_without_raising_on_this_machine() -> None:
 
 
 # ----------------------------------------------------------------------
+# Finding it on macOS (WU-5.1)
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def mac_volumes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A stand-in for /Volumes, with the platform set to macOS."""
+    root = tmp_path / "Volumes"
+    root.mkdir()
+    monkeypatch.setattr(cards.sys, "platform", "darwin")
+    monkeypatch.setattr(cards, "_MAC_VOLUMES", root)
+    # The temporary directory is on the startup disk itself, which APFS gives
+    # the same st_dev as /, so the real rule would exclude every test volume.
+    monkeypatch.setattr(cards, "_startup_device", lambda: -1)
+    return root
+
+
+def test_on_macos_every_mounted_volume_is_probed_and_the_startup_disk_is_not(
+    mac_volumes: Path,
+) -> None:
+    make_volume(mac_volumes / "Untitled", "100_FUJI")
+    (mac_volumes / "Backup").mkdir()
+    (mac_volumes / ".timemachine").mkdir()
+    (mac_volumes / "stray-file").write_text("", encoding="utf-8")
+    try:
+        (mac_volumes / "Macintosh HD").symlink_to("/", target_is_directory=True)
+    except OSError:
+        pass  # Windows without the symlink privilege; the rest still holds.
+
+    assert [p.name for p in candidate_volumes()] == ["Backup", "Untitled"]
+
+
+def test_on_macos_a_volume_on_the_startup_disk_is_never_probed(
+    mac_volumes: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_volume(mac_volumes / "Untitled", "100_FUJI")
+    monkeypatch.setattr(cards, "_startup_device", lambda: mac_volumes.stat().st_dev)
+    assert candidate_volumes() == ()
+
+
+def test_on_macos_the_card_is_found_under_volumes_without_being_configured(
+    library_root: Path, tmp_path: Path, mac_volumes: Path
+) -> None:
+    make_volume(mac_volumes / "Backup")
+    card_root = make_volume(mac_volumes / "Untitled", "100_FUJI")
+
+    location = detect_card(card_settings(library_root, tmp_path))
+
+    assert location.found
+    assert location.dcim_root == card_root / "DCIM"
+
+
+def test_on_macos_nothing_mounted_is_no_media(
+    library_root: Path, tmp_path: Path, mac_volumes: Path
+) -> None:
+    location = detect_card(card_settings(library_root, tmp_path))
+    assert location.status == CardStatus.NO_MEDIA
+
+
+def _mounted(read_only: bool):
+    class Result:
+        f_flag = os.ST_RDONLY if read_only else 0
+    return lambda path: Result()
+
+
+@pytest.mark.skipif(not hasattr(os, "ST_RDONLY"), reason="no statvfs flags here")
+def test_on_macos_a_card_mounted_read_write_is_said_to_be(
+    library_root: Path, tmp_path: Path, mac_volumes: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS writes to a FAT/exFAT volume it mounts read-write (.fseventsd at
+    once), so the card is only read-only if it was mounted that way."""
+    make_volume(mac_volumes / "Untitled", "100_FUJI")
+    settings = card_settings(library_root, tmp_path)
+
+    monkeypatch.setattr(cards.os, "statvfs", _mounted(read_only=False))
+    writable = detect_card(settings)
+    monkeypatch.setattr(cards.os, "statvfs", _mounted(read_only=True))
+    read_only = detect_card(settings)
+
+    assert writable.found and read_only.found
+    assert "read-write" in writable.message
+    assert "read-write" not in read_only.message
+    assert writable.message.endswith(".")
+
+
+def test_the_mount_warning_is_macos_only(
+    library_root: Path, tmp_path: Path, card: Path, volume: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cards.sys, "platform", "win32")
+    location = detect_card(card_settings(library_root, tmp_path), volumes=[volume])
+    assert "read-write" not in location.message
+
+
+# ----------------------------------------------------------------------
 # Reading the card
 # ----------------------------------------------------------------------
 
@@ -296,6 +393,24 @@ def test_non_image_files_are_reported_not_silently_dropped(
 
     assert scan.photo_count == 1
     assert [p.name for p in scan.ignored] == ["notes.txt"]
+
+
+def test_appledouble_files_are_not_photographs(
+    library_root: Path, tmp_path: Path, card: Path, volume: Path
+) -> None:
+    """``._DSCF0010.JPG`` is macOS metadata with a JPEG's suffix. Paired by
+    suffix it would be a second, unreadable photograph; it is reported instead,
+    like any other file that is not one."""
+    put(card, "DSCF0010.JPG")
+    put(card, "._DSCF0010.JPG", size=4000)
+    put(card, "._DSCF0011.RAF", size=4000)
+    settings = card_settings(library_root, tmp_path)
+
+    scan = scan_card(settings, location=detect_card(settings, volumes=[volume]))
+
+    assert [p.primary.name for p in scan.photos] == ["DSCF0010.JPG"]
+    assert scan.photos[0].raw is None
+    assert sorted(p.name for p in scan.ignored) == ["._DSCF0010.JPG", "._DSCF0011.RAF"]
 
 
 def test_several_image_folders_are_all_scanned(

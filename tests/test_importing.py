@@ -436,11 +436,10 @@ def test_a_sidecar_that_cannot_be_written_fails_the_photograph(
 
 
 def test_an_imported_sidecar_is_readable_by_exiv2(
-    settings: Settings, card: Path, catalog: Catalog
+    settings: Settings, card: Path, catalog: Catalog, pyexiv2
 ) -> None:
     """The end of D-1's chain: off the card, into the library, and legible to
     software that has never heard of this application."""
-    pyexiv2 = pytest.importorskip("pyexiv2")
     put(card, "DSCF1029.JPG", fixtures.BURST_FIRST)
     plan = plan_import(scan(settings), keep(0, rating=5), settings)
 
