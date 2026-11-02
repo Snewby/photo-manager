@@ -318,6 +318,7 @@ def test_on_macos_a_card_mounted_read_write_is_said_to_be(
     read_only = detect_card(settings)
 
     assert writable.found and read_only.found
+    assert writable.writable is True and read_only.writable is False
     assert "read-write" in writable.message
     assert "read-write" not in read_only.message
     assert writable.message.endswith(".")
@@ -330,6 +331,31 @@ def test_the_mount_warning_is_macos_only(
     monkeypatch.setattr(cards.sys, "platform", "win32")
     location = detect_card(card_settings(library_root, tmp_path), volumes=[volume])
     assert "read-write" not in location.message
+    assert location.writable is None
+
+
+def test_on_macos_remounting_asks_diskutil_and_says_what_went_wrong(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from photo_manager import macos
+    calls: list[str] = []
+    monkeypatch.setattr(cards.sys, "platform", "darwin")
+    monkeypatch.setattr(macos, "remount_read_only", lambda path: calls.append(str(path)))
+    cards.remount_read_only(tmp_path / "DCIM")
+    assert calls == [str(tmp_path / "DCIM")]
+
+    def refuses(path):
+        raise macos.DiskutilError("diskutil unmount failed: Resource busy")
+
+    monkeypatch.setattr(macos, "remount_read_only", refuses)
+    with pytest.raises(cards.CardError, match="Resource busy.*lock switch"):
+        cards.remount_read_only(tmp_path / "DCIM")
+
+
+def test_remounting_is_refused_off_macos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cards.sys, "platform", "win32")
+    with pytest.raises(cards.CardError, match="macOS"):
+        cards.remount_read_only(tmp_path)
 
 
 # ----------------------------------------------------------------------

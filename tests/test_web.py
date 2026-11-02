@@ -47,6 +47,7 @@ from photo_manager.migration import directory_snapshot
 from photo_manager.models import Location, Person, Photo, Session, Tag
 from photo_manager.thumbnails import ThumbnailCache
 from photo_manager.web.app import MAX_PAGE, create_app
+from photo_manager.web import state as web_state
 from photo_manager.web.state import AppState, ConfirmStatus
 
 
@@ -68,6 +69,11 @@ def never_probe_the_real_machine(
     """
     if request.node.get_closest_marker("needs_card") is None:
         monkeypatch.setattr(cards, "candidate_volumes", lambda: ())
+        # A synthetic card is a temporary folder, which on macOS is on a
+        # writable disk; as far as these tests go it is a card mounted the
+        # safe way. The tests that want it writable say so.
+        monkeypatch.setattr(cards, "card_writable", lambda path: False)
+        monkeypatch.setattr(web_state, "card_writable", lambda path: False)
 
 
 @pytest.fixture
@@ -2478,3 +2484,196 @@ def test_the_page_marks_a_guessed_date_as_guessed(library: TestClient) -> None:
 
     assert "captured_at_inferred" in script
     assert "card__when--inferred" in styles
+
+
+# ----------------------------------------------------------------------
+# The card's mount, and backups — the strip above every page
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def writable_card(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """A card macOS has mounted read-write, until something remounts it."""
+    mount = {"writable": True, "remounts": 0}
+    monkeypatch.setattr(cards, "card_writable", lambda path: mount["writable"])
+    monkeypatch.setattr(web_state, "card_writable", lambda path: mount["writable"])
+
+    def remount(path: Path) -> None:
+        mount["remounts"] += 1
+        mount["writable"] = False
+
+    monkeypatch.setattr(web_state, "remount_read_only", remount)
+    return mount
+
+
+def test_a_read_write_card_is_named_and_culling_and_importing_wait(
+    settings: Settings, card: Path, writable_card: dict
+) -> None:
+    with cull_client(settings, card, "DSCF0001.JPG", "DSCF0002.JPG") as client:
+        status = client.get("/api/status").json()["card"]
+        scan_id = client.get("/api/card").json()["scan_id"]
+        decided = decide(client, scan_id, 0, verdict="keep")
+        imported = client.post(f"/api/card/{scan_id}/import")
+
+    assert status["writable"] is True and "read-write" in status["message"]
+    assert decided.status_code == 409 and decided.json()["error"] == "card-writable"
+    assert imported.status_code == 409 and imported.json()["error"] == "card-writable"
+
+
+def test_remounting_makes_the_card_safe_and_rescans_it(
+    settings: Settings, card: Path, writable_card: dict
+) -> None:
+    with cull_client(settings, card, "DSCF0001.JPG") as client:
+        before = client.get("/api/card").json()["scan_id"]
+        remounted = client.post("/api/card/remount")
+        after = remounted.json()["scan_id"]
+        decided = decide(client, after, 0, verdict="keep")
+        status = client.get("/api/status").json()["card"]
+
+    assert remounted.status_code == 200 and writable_card["remounts"] == 1
+    assert after != before  # the old scan's URLs are stale, and say so
+    assert decided.status_code == 200
+    assert status["writable"] is False
+
+
+def test_a_remount_that_fails_says_why(
+    settings: Settings, card: Path, writable_card: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuses(path: Path) -> None:
+        raise cards.CardError("The card could not be remounted read-only: busy.")
+
+    monkeypatch.setattr(web_state, "remount_read_only", refuses)
+    with cull_client(settings, card, "DSCF0001.JPG") as client:
+        response = client.post("/api/card/remount")
+    assert response.status_code == 409 and "busy" in response.json()["detail"]
+
+
+def test_with_no_backup_root_the_strip_says_how_to_set_one(
+    settings: Settings, card: Path
+) -> None:
+    with client_for(settings) as client:
+        status = client.get("/api/status").json()["backup"]
+        started = client.post("/api/backup")
+    assert status["configured"] is False and "backup_root" in status["message"]
+    assert started.status_code == 409 and started.json()["error"] == "backup-refused"
+
+
+def test_an_unplugged_backup_drive_is_refused_before_anything_starts(
+    settings: Settings, card: Path, tmp_path: Path
+) -> None:
+    settings = replace(settings, backup_root=tmp_path / "Volumes" / "Gone" / "PMB")
+    with client_for(settings) as client:
+        response = client.post("/api/backup")
+        status = client.get("/api/status").json()["backup"]
+    assert response.status_code == 409 and "not attached" in response.json()["detail"]
+    assert status["attached"] is False and status["progress"]["status"] == "idle"
+
+
+@pytest.fixture
+def backup_drive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from photo_manager import backup
+    root = tmp_path / "Volumes" / "Backup"
+    root.mkdir(parents=True)
+    real = backup.device
+    monkeypatch.setattr(
+        backup, "device",
+        lambda path: -1 if path == root or root in path.parents else real(path),
+    )
+    private = tmp_path / "private"
+    private.mkdir()
+    (private / "PLAN.md").write_text("plan", encoding="utf-8")
+    monkeypatch.setattr(backup, "PRIVATE_DIR", private)
+    return root
+
+
+def test_the_backup_button_takes_a_verified_snapshot_and_the_strip_updates(
+    settings: Settings, card: Path, backup_drive: Path
+) -> None:
+    from photo_manager.backup import verify_snapshot
+    settings = replace(settings, backup_root=backup_drive / "PMB")
+    seed(settings, content_hash=content_hash(fixtures.JPEG_WITHOUT_RAW),
+         library_path="2026/2026-01/a.jpg")
+    (settings.library_root / "2026" / "2026-01").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(fixtures.JPEG_WITHOUT_RAW, settings.library_root / "2026" / "2026-01" / "a.jpg")
+
+    with client_for(settings) as client:
+        before = client.get("/api/status").json()["backup"]
+        started = client.post("/api/backup").json()
+        deadline = time.monotonic() + 30
+        while (progress := client.get("/api/backup").json())["progress"]["status"] == "running":
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        after = client.get("/api/status").json()["backup"]
+
+    assert before["attached"] is True and before["last_snapshot"] is None
+    assert started["progress"]["status"] in ("running", "done")
+    assert progress["progress"]["status"] == "done", progress["progress"]["error"]
+    assert after["last_snapshot"] == progress["progress"]["result"]["snapshot"]
+    assert after["photos_not_backed_up"] == 0
+    [snapshot] = (backup_drive / "PMB" / settings.library_root.name).iterdir()
+    assert verify_snapshot(snapshot)[1] == []
+
+
+def test_an_import_and_a_backup_never_run_together(
+    settings: Settings, card: Path, backup_drive: Path
+) -> None:
+    settings = replace(settings, backup_root=backup_drive / "PMB")
+    state = AppState(settings)
+    with TestClient(create_app(settings, state=state)) as client:
+        put(card, "DSCF0001.JPG", fixtures.BURST_SECOND)
+        scan_id = client.get("/api/card").json()["scan_id"]
+
+        state._backup.status = web_state.ImportStatus.RUNNING
+        importing = client.post(f"/api/card/{scan_id}/import")
+        state._backup.status = web_state.ImportStatus.IDLE
+
+        state.session.importing.status = web_state.ImportStatus.RUNNING
+        backing_up = client.post("/api/backup")
+        state.session.importing.status = web_state.ImportStatus.IDLE
+
+    assert importing.status_code == 409 and importing.json()["error"] == "busy"
+    assert backing_up.status_code == 409 and backing_up.json()["error"] == "busy"
+
+
+def test_a_drive_that_stops_answering_does_not_freeze_the_app(
+    settings: Settings, card: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A USB drive can hang outright — every call into it blocks, ls included.
+    The strip polls every few seconds, so each poll must give up and say so,
+    and a hung drive must cost one waiting thread, not one per request."""
+    from photo_manager import backup
+    settings = replace(settings, backup_root=tmp_path / "Volumes" / "Hung" / "PMB")
+    released = threading.Event()
+    asked: list[int] = []
+
+    def hangs(*args, **kwargs):
+        asked.append(1)
+        released.wait(10)
+        raise OSError("gone")
+
+    monkeypatch.setattr(web_state, "DRIVE_TIMEOUT", 0.2)
+    monkeypatch.setattr(backup, "status", hangs)
+    try:
+        with client_for(settings) as client:
+            started = time.monotonic()
+            first = client.get("/api/status").json()["backup"]
+            second = client.get("/api/status").json()["backup"]
+            refused = client.post("/api/backup")
+            took = time.monotonic() - started
+            library = client.get("/api/library/photos")
+    finally:
+        released.set()
+
+    assert "not responding" in first["message"] and "not responding" in second["message"]
+    assert refused.status_code == 409 and "not responding" in refused.json()["detail"]
+    assert took < 3 and len(asked) == 1
+    assert library.status_code in (200, 404)  # the rest of the app still answers
+
+
+def test_scripts_are_revalidated_so_an_update_is_seen_without_a_hard_reload(
+    settings: Settings, card: Path
+) -> None:
+    with client_for(settings) as client:
+        response = client.get("/static/strip.js")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"

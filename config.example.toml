@@ -23,6 +23,11 @@ library_root = 'C:\Users\you\Pictures\Photos'
 # glob, not a folder name.
 card_folder_glob = '1??_FUJI'
 
+# Where the app's Backup button writes verified snapshots: a folder on a
+# DIFFERENT physical drive. Commented out, the button says it is not set up.
+# backup_root = 'E:\PhotoManagerBackup'
+# backup_root = '/Volumes/Backup/PhotoManagerBackup'
+
 # Derived state — the SQLite catalog and the thumbnail cache. Both are
 # regenerable, so they live outside the library by default.
 # state_dir = 'C:\path\to\photo-manager\state'

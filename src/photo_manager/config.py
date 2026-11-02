@@ -78,6 +78,12 @@ class Settings:
     database_path: Path | None = None
     thumbnail_cache_dir: Path | None = None
 
+    #: Where the app's Backup button writes snapshots — a folder on another
+    #: physical drive, e.g. ``/Volumes/Backup/PhotoManagerBackup``. None
+    #: means the button says it is not set up. It is a setting rather than
+    #: something the page sends, because no endpoint accepts a path (§4.1).
+    backup_root: Path | None = None
+
     #: Long edge of generated thumbnails, in pixels (FR-2.2).
     thumbnail_max_px: int = 400
 
@@ -159,7 +165,7 @@ class Settings:
 
         kwargs: dict[str, object] = {"source_path": path}
         for name in ("library_root", "card_dcim_root", "state_dir",
-                     "database_path", "thumbnail_cache_dir"):
+                     "database_path", "thumbnail_cache_dir", "backup_root"):
             if name in data:
                 kwargs[name] = _as_path(name, data[name])
         if "card_folder_glob" in data:

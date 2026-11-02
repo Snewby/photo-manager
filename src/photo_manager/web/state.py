@@ -39,12 +39,17 @@ import datetime as dt
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from ..cards import CardPhoto, CardScan, Dedup, confirm_imports, scan_card
+from .. import backup
+from ..backup import BackupError, BackupResult
+from ..cards import (
+    CardError, CardLocation, CardPhoto, CardScan, Dedup, card_writable, confirm_imports,
+    detect_card, remount_read_only, scan_card,
+)
 from ..catalog import Catalog
 from ..config import Settings
 from ..culling import (
@@ -55,7 +60,10 @@ from ..thumbnails import ThumbnailCache, ThumbnailError, render_and_hash
 
 __all__ = [
     "AppState",
+    "BackupProgress",
+    "BusyError",
     "CardSession",
+    "CardWritableError",
     "ConfirmProgress",
     "ConfirmStatus",
     "ImportProgress",
@@ -67,6 +75,12 @@ __all__ = [
     "open_catalog",
     "PREFETCH_DEPTH",
 ]
+
+#: How long the status strip waits on a drive before saying it is not
+#: responding. A USB drive can stop answering altogether — every call into it
+#: blocks, ``ls`` included — and a page that polls every few seconds must not
+#: turn that into a frozen app.
+DRIVE_TIMEOUT = 3.0
 
 #: How many frames ahead of the one on screen to render previews for.
 #:
@@ -197,6 +211,43 @@ class ImportProgress:
 
 
 @dataclass
+class BackupProgress:
+    """Progress of one backup. Mutated only under the state lock."""
+
+    status: str = ImportStatus.IDLE
+    done: int = 0
+    total: int = 0
+    current: str | None = None
+    seconds: float = 0.0
+    error: str | None = None
+    result: BackupResult | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.status == ImportStatus.RUNNING
+
+    def snapshot(self) -> BackupProgress:
+        return BackupProgress(
+            status=self.status, done=self.done, total=self.total,
+            current=self.current, seconds=self.seconds, error=self.error,
+            result=self.result,
+        )
+
+
+class CardWritableError(PermissionError):
+    """The card is mounted read-write, so culling and importing wait (§4.1).
+
+    Neither writes to the card — the decisions go to ``state/`` and the import
+    reads — but every minute it stays mounted that way is a minute macOS and
+    Finder can add files to it, and the fix is one button.
+    """
+
+
+class BusyError(RuntimeError):
+    """An import and a backup would be reading and writing the same library."""
+
+
+@dataclass
 class CardSession:
     """One scan of the card, the background pass over it, and the cull."""
 
@@ -303,6 +354,12 @@ class AppState:
         self._session: CardSession | None = None
         self._confirm_thread: threading.Thread | None = None
         self._import_thread: threading.Thread | None = None
+        self._backup = BackupProgress()
+        self._backup_thread: threading.Thread | None = None
+        # One worker per question asked of a drive, and never more than one of
+        # each in flight: if a drive hangs, one thread waits on it rather than
+        # every request the page sends.
+        self._probes: dict[str, tuple[ThreadPoolExecutor, Future | None]] = {}
         # Three, because the work is one card read plus one decode and the
         # reader is the limit (C-4). More threads queue on the same bandwidth.
         self._previews = ThreadPoolExecutor(max_workers=3, thread_name_prefix="preview")
@@ -506,6 +563,7 @@ class AppState:
         """
         with self._lock:
             session = self.require(scan_id)
+            self._refuse_if_writable(session)
             photo = session.photo(index)
             if index not in session.cull_order:
                 raise NotCullableError(
@@ -649,6 +707,11 @@ class AppState:
             session = self.require(scan_id)
             if session.importing.running:
                 return session.importing.snapshot()
+            self._refuse_if_writable(session)
+            if self._backup.running:
+                raise BusyError(
+                    "A backup is reading the library. Import when it has finished."
+                )
             session.importing = ImportProgress(status=ImportStatus.RUNNING)
 
         thread = threading.Thread(
@@ -719,6 +782,159 @@ class AppState:
                     + len(outcome.failed)
 
     # ------------------------------------------------------------------
+    # The card's mount (§4.1, macOS)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _refuse_if_writable(session: CardSession) -> None:
+        """Asked of the mount as it is now, not as it was at scan time."""
+        dcim = session.scan.location.dcim_root
+        if dcim is not None and card_writable(dcim):
+            raise CardWritableError(
+                "The card is mounted read-write, so macOS can write to it. "
+                "Use Remount read-only at the top of the page first."
+            )
+
+    def remount_card(self) -> CardSession:
+        """Have macOS mount the card read-only, then read it again.
+
+        Anything reading the card would make the unmount fail, so the
+        confirming pass is stopped first and an import refuses it outright.
+        """
+        with self._lock:
+            session = self._session
+            if session is not None and session.importing.running:
+                raise BusyError("An import is reading the card. Remount when it has finished.")
+            self._cancel_confirm()
+            location = session.scan.location if session is not None else None
+        if location is None or location.dcim_root is None:
+            location = detect_card(self.settings)
+        if not location.found or location.dcim_root is None:
+            raise CardError("No card is attached.")
+        confirming = self._confirm_thread
+        if confirming is not None and confirming.is_alive():
+            confirming.join(timeout=30.0)
+        remount_read_only(location.dcim_root)
+        return self.scan(force=True)
+
+    # ------------------------------------------------------------------
+    # Backing up (photo_manager.backup)
+    # ------------------------------------------------------------------
+
+    def start_backup(self) -> BackupProgress:
+        """Take a snapshot to ``backup_root``, on a thread of its own.
+
+        What would be refused — no destination, the drive not attached — is
+        refused here, before the request returns, so the page can say so at
+        once rather than report a failure a moment later.
+        """
+        with self._lock:
+            if self._backup.running:
+                return self._backup.snapshot()
+            session = self._session
+            if session is not None and session.importing.running:
+                raise BusyError(
+                    "An import is writing to the library. Back up when it has finished."
+                )
+        # Outside the lock, and bounded: asking a hung drive must not hang this.
+        drive = self.backup_status()
+        if not drive.configured or not drive.attached:
+            raise BackupError(drive.message)
+        with self._lock:
+            if self._backup.running:
+                return self._backup.snapshot()
+            self._backup = BackupProgress(status=ImportStatus.RUNNING)
+            thread = threading.Thread(
+                target=self._run_backup, name="backup",
+                daemon=False,  # it is writing to a drive; let it finish
+            )
+            self._backup_thread = thread
+        thread.start()
+        return self.backup_progress()
+
+    def backup_progress(self) -> BackupProgress:
+        with self._lock:
+            return self._backup.snapshot()
+
+    def backup_status(self) -> backup.BackupStatus:
+        """As :func:`backup.status`, but never stuck on a drive that has hung."""
+        def ask() -> backup.BackupStatus:
+            with open_catalog(self.settings) as catalog:
+                hashes = [] if catalog is None else [
+                    row[0] for row in catalog.connection.execute("SELECT content_hash FROM photo")
+                ]
+            return backup.status(self.settings, hashes)
+
+        try:
+            return self._bounded("backup", ask)
+        except FutureTimeout:
+            return backup.BackupStatus(
+                configured=True, attached=False,
+                destination=str(self.settings.backup_root),
+                message=(
+                    "The backup drive is not responding. Eject it — or unplug it if "
+                    "ejecting hangs too — and plug it back in."
+                ),
+            )
+
+    def card_location(self) -> CardLocation:
+        """Where the card is now, located rather than scanned, within a time limit."""
+        try:
+            return self._bounded("card", lambda: detect_card(self.settings))
+        except FutureTimeout:
+            return CardLocation(
+                status="not-responding",
+                message="A drive attached to this Mac is not responding, so the card "
+                        "cannot be looked for. Unplug and replug whatever was last attached.",
+            )
+
+    def _bounded(self, name: str, question):
+        """Ask *question* on this name's own worker; raise FutureTimeout if it
+        does not answer in DRIVE_TIMEOUT. A question still stuck from an earlier
+        call is waited on again rather than asked twice."""
+        with self._lock:
+            pool, pending = self._probes.get(name, (None, None))
+            if pool is None:
+                pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"probe-{name}")
+            if pending is None or pending.done():
+                pending = pool.submit(question)
+            self._probes[name] = (pool, pending)
+        return pending.result(timeout=DRIVE_TIMEOUT)
+
+    def _run_backup(self) -> None:
+        started = time.perf_counter()
+
+        def progress(done: int, total: int, name: str) -> None:
+            with self._lock:
+                self._backup.done = done - 1
+                self._backup.total = total
+                self._backup.current = name
+                self._backup.seconds = time.perf_counter() - started
+
+        try:
+            result = backup.take_snapshot(self.settings, progress=progress)
+        except (BackupError, OSError) as exc:
+            status, error, result = ImportStatus.FAILED, str(exc), None
+        else:
+            if result.ok:
+                status, error = ImportStatus.DONE, None
+            else:
+                status = ImportStatus.FAILED
+                error = (
+                    f"{len(result.failures)} file(s) did not verify, so the snapshot "
+                    f"was left unfinished at {result.snapshot.name}. First: "
+                    f"{result.failures[0]}"
+                )
+        with self._lock:
+            self._backup.status = status
+            self._backup.error = error
+            self._backup.result = result
+            self._backup.current = None
+            self._backup.seconds = time.perf_counter() - started
+            if result is not None and result.ok:
+                self._backup.done = self._backup.total = result.files
+
+    # ------------------------------------------------------------------
 
     def shutdown(self) -> None:
         with self._lock:
@@ -732,4 +948,9 @@ class AppState:
         importer = self._import_thread
         if importer is not None and importer.is_alive():
             importer.join(timeout=300.0)
+        backing_up = self._backup_thread
+        if backing_up is not None and backing_up.is_alive():
+            backing_up.join(timeout=600.0)
         self._previews.shutdown(wait=False)
+        for pool, _ in self._probes.values():
+            pool.shutdown(wait=False, cancel_futures=True)

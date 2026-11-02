@@ -1043,3 +1043,18 @@ body {
     border-bottom: 1px solid var(--line);
   }
 }
+
+/* The strip under every header (strip.js): is the card safe, is the library
+ * backed up. Quiet when all is well; the card half only ever appears to warn. */
+.strip { border-bottom: 1px solid var(--line); background: var(--bg-raised); }
+.strip__row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 20px; font-size: 13px; color: var(--text-dim);
+  border-left: 3px solid transparent;
+}
+.strip__row + .strip__row { border-top: 1px solid var(--line); }
+.strip__text { margin: 0; flex: 1; }
+.strip__row--good { border-left-color: var(--new); }
+.strip__row--warn { border-left-color: var(--likely); color: #f0c98a; }
+.strip__row--bad { border-left-color: var(--bad); background: #3a211d; color: #f0b3a8; }
+.strip__progress { margin: 0; max-width: none; padding: 0 20px 6px; }

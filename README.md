@@ -34,6 +34,11 @@ python3 -m venv .venv
 cp config.example.toml config.toml
 ```
 
+**Starting it:** double-click `tools/Photo Manager.command` — or a link to it on the
+Desktop or in the Dock. It starts the app in a Terminal window and opens the browser
+when the app answers; closing that window stops it. If the app is already running it
+just opens the browser.
+
 **Mount the card read-only, or macOS writes to it.** Mounting a FAT or exFAT
 volume read-write is itself a write: within seconds macOS adds a `.fseventsd`
 folder, exFAT's dirty flag is set while it is mounted, and Finder adds `.DS_Store`
@@ -46,10 +51,11 @@ mount | grep /Volumes/
 ```
 
 The card's line should say `read-only`. If it does not, the reader ignores the
-switch — eject the card and use a different reader. (Remounting with
-`diskutil mount readOnly` afterwards is read-only from then on, but the first
-read-write mount has already written.) The app says so on every scan when it finds
-a card mounted read-write, and never treats a `._*` file as a photograph.
+switch. The app notices too: a card mounted read-write gets a red bar at the top of
+every page with a **Remount read-only** button, and culling and importing wait until
+it has been pressed. Remounting stops further writes but cannot undo the first
+mount's `.fseventsd`, so the lock switch is still the better way. A `._*` file on a
+card is never treated as a photograph.
 
 Cards are found by probing `/Volumes` for a `DCIM` folder, and the startup disk is
 never probed. A card's identity — which decision file its culls go in — comes from
@@ -122,14 +128,29 @@ private/               git-ignored: the owner's own documents, overrides and tes
 
 ## Backing up the library
 
-```
-.venv\Scripts\python.exe tools\backup_library.py --to E:\PhotoManagerBackup
-```
+Set `backup_root` in `config.toml` to a folder on another drive, and every page has a
+**Back up now** button under its header. Beside it: when the last backup was, and how
+many photographs and tag files have changed since — so "is this backed up?" is
+answered without being asked. The page never sends a path; where a backup goes is
+configuration.
 
-Writes a dated snapshot mirroring the library, hashes every file on the way out and
-re-reads it from the destination to confirm what landed. It refuses a destination on the
-library's own volume, refuses to overwrite an existing snapshot, and has no delete path
-at all. Re-check an existing one with `--verify-only <snapshot folder>`.
+Each backup is a dated snapshot, `<backup_root>/<library>/<date>/`, holding `library/`
+— a plain copy you can restore by copying it back — plus `state/` (the catalog, cull
+decisions and undo logs, not the thumbnail cache), the private documents folder if
+there is one, and `config.toml`. Snapshots are **incremental without looking it**:
+a file unchanged since the previous snapshot is a hard link to it, so every snapshot
+is complete on its own, only what changed takes space, and deleting one never loses a
+file another still holds. Every file — linked ones too — is re-read from the drive and
+checked against its SHA-256 before the snapshot is named; one that fails is left as
+`<date>.partial`. Nothing deletes or overwrites a snapshot, and a drive that stops
+responding is reported as such rather than freezing the page.
+
+The same backup from a terminal, and a re-check of an old one:
+
+```
+.venv\Scripts\python.exe tools\backup_library.py
+.venv\Scripts\python.exe tools\backup_library.py --verify-only <snapshot folder>
+```
 
 ## Scanning the card
 

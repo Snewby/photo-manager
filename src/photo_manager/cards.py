@@ -61,6 +61,9 @@ __all__ = [
     "CardScan",
     "removable_volumes",
     "candidate_volumes",
+    "card_writable",
+    "remount_read_only",
+    "CardError",
     "detect_card",
     "scan_card",
     "confirm_imports",
@@ -100,6 +103,10 @@ class CardLocation:
     elsewhere: tuple[Path, ...] = ()
     #: A sentence for a human. Always populated, including on success.
     message: str = ""
+    #: True when macOS has the card mounted read-write, which is itself a write
+    #: (§4.1); False when it is read-only; None where that cannot be said —
+    #: no card, or not macOS.
+    writable: bool | None = None
 
     @property
     def found(self) -> bool:
@@ -354,8 +361,9 @@ def detect_card(
                 f"({len(folders)} image folder{'' if len(folders) == 1 else 's'}: "
                 f"{', '.join(f.name for f in folders)})."
                 + (f" Also saw {', '.join(str(p) for p in rest)}." if rest else "")
-                + _mount_warning(first)
+                + _mount_warning(writable := card_writable(first))
             ),
+            writable=writable,
         )
 
     if probe:
@@ -414,32 +422,59 @@ def _from_configured(
             f"Card found at {configured} "
             f"({len(folders)} image folder{'' if len(folders) == 1 else 's'}: "
             f"{', '.join(f.name for f in folders)})."
-            + _mount_warning(configured)
+            + _mount_warning(writable := card_writable(configured))
         ),
+        writable=writable,
     )
 
 
-def _mount_warning(dcim_root: Path) -> str:
-    """A sentence when macOS has the card mounted read-write, else nothing.
+def card_writable(dcim_root: Path) -> bool | None:
+    """Whether macOS has the card mounted read-write. None off macOS.
 
     This module writes nothing to a card, but on macOS that is not the whole of
     §4.1: mounting a FAT or exFAT volume read-write is itself a write — it
     gains a ``.fseventsd`` folder within seconds, exFAT's dirty flag is set,
     and Finder adds ``.DS_Store`` and ``._*`` files as it is browsed. Measured
     on FAT32 and exFAT images, 2026-11-02; a read-only mount changed no byte.
-    The app cannot remount the card itself, so it says so on every scan.
+    Asked of the mount as it is now, so it is right after a remount too.
     """
     if sys.platform != "darwin":
-        return ""
+        return None
     try:
-        read_only = bool(os.statvfs(dcim_root).f_flag & os.ST_RDONLY)
+        return not os.statvfs(dcim_root).f_flag & os.ST_RDONLY
     except (OSError, AttributeError):
-        return ""
-    if read_only:
+        return None
+
+
+def remount_read_only(dcim_root: Path) -> None:
+    """Have macOS mount the card read-only instead (no password needed).
+
+    It stops further writes; it cannot take back the ``.fseventsd`` the first
+    mount wrote. The card's lock switch avoids even that, and is still the
+    better way.
+    """
+    if sys.platform != "darwin":
+        raise CardError("Remounting a card is only done on macOS.")
+    from .macos import DiskutilError, remount_read_only as remount
+    try:
+        remount(dcim_root)
+    except DiskutilError as exc:
+        raise CardError(
+            f"The card could not be remounted read-only: {exc} "
+            f"Eject it, slide its lock switch to Lock, and insert it again."
+        ) from exc
+
+
+class CardError(RuntimeError):
+    """Something asked of the card that could not be done, with the reason."""
+
+
+def _mount_warning(writable: bool | None) -> str:
+    if not writable:
         return ""
     return (
         " It is mounted read-write, so macOS can write to it (.fseventsd, "
-        "._ files). Eject it and mount it read-only - see the README."
+        "._ files). Remount it read-only before culling or importing."
     )
 
 

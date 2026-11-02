@@ -52,7 +52,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import queries, tagging, vocabulary
-from ..cards import CardLocation, CardPhoto, CardScan
+from .. import backup
+from ..backup import BackupError
+from ..cards import CardError, CardLocation, CardPhoto, CardScan
 from ..catalog import Catalog
 from ..config import Settings
 from ..culling import Decision, Resume, Tally, Verdict
@@ -67,7 +69,9 @@ from ..thumbnails import ThumbnailCache, ThumbnailError, embedded_thumbnail
 from ..vocabulary import VocabularyError
 from .state import (
     AppState,
+    BusyError,
     CardSession,
+    CardWritableError,
     ConfirmProgress,
     ImportProgress,
     NotCullableError,
@@ -240,6 +244,22 @@ def create_app(
         # always because it will not fit (FR-4.5). The message carries the
         # numbers, because "cull further" needs to know by how much.
         return JSONResponse({"error": "import-refused", "detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(CardWritableError)
+    def _card_writable(_: Request, exc: CardWritableError) -> JSONResponse:
+        return JSONResponse({"error": "card-writable", "detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(CardError)
+    def _card_refused(_: Request, exc: CardError) -> JSONResponse:
+        return JSONResponse({"error": "card", "detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(BusyError)
+    def _busy(_: Request, exc: BusyError) -> JSONResponse:
+        return JSONResponse({"error": "busy", "detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(BackupError)
+    def _backup_refused(_: Request, exc: BackupError) -> JSONResponse:
+        return JSONResponse({"error": "backup-refused", "detail": str(exc)}, status_code=409)
 
     @app.exception_handler(NoSuchRowError)
     def _no_row(_: Request, exc: NoSuchRowError) -> JSONResponse:
@@ -433,6 +453,34 @@ def create_app(
             "import": _import_payload(app_state.import_progress(scan_id)),
         })
 
+    @app.get("/api/status")
+    def status() -> Response:
+        """What every page shows above its own content: is the card safe, and
+        is the library backed up. Cheap enough to poll — the card is located,
+        not scanned, and the backup drive is asked about, not read."""
+        # Located now rather than taken from the last scan, so a card plugged
+        # in or remounted outside the app shows at once.
+        return _json({
+            "card": _location_payload(app_state.card_location()),
+            "backup": _backup_payload(app_state),
+        })
+
+    @app.post("/api/card/remount")
+    def card_remount() -> Response:
+        """Have macOS mount the card read-only, then rescan it (§4.1)."""
+        return _json(_session_payload(app_state, app_state.remount_card()))
+
+    @app.get("/api/backup")
+    def backup_state() -> Response:
+        return _json(_backup_payload(app_state))
+
+    @app.post("/api/backup")
+    def backup_start() -> Response:
+        """Snapshot the library to ``backup_root``. Takes no path: where a
+        backup goes is configuration, never something a page sends (§4.1)."""
+        app_state.start_backup()
+        return _json(_backup_payload(app_state))
+
     @app.get("/api/card/{scan_id}/cull")
     def card_cull(scan_id: str) -> Response:
         """The cull state on its own, small enough to re-fetch freely."""
@@ -587,6 +635,17 @@ def create_app(
     # ------------------------------------------------------------------
     # The page
     # ------------------------------------------------------------------
+
+    @app.middleware("http")
+    async def revalidate_static(request: Request, call_next):
+        # Without a Cache-Control the browser guesses how long a script stays
+        # fresh, and serves last week's after an update until a hard reload —
+        # which cost ten minutes in WU-2.2 and showed the old backup strip
+        # here. no-cache keeps the copy but asks first; unchanged is a 304.
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            response.headers.setdefault("Cache-Control", "no-cache")
+        return response
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -1279,6 +1338,42 @@ def _location_payload(location: CardLocation) -> dict[str, Any]:
         "dcim_root": None if location.dcim_root is None else str(location.dcim_root),
         "image_folders": [folder.name for folder in location.image_folders],
         "elsewhere": [str(path) for path in location.elsewhere],
+        "writable": location.writable,
+        "volume": None if location.dcim_root is None else location.dcim_root.parent.name,
+    }
+
+
+def _backup_payload(state: AppState) -> dict[str, Any]:
+    status = state.backup_status()
+    progress = state.backup_progress()
+    result = progress.result
+    return {
+        "configured": status.configured,
+        "attached": status.attached,
+        "message": status.message,
+        "volume": status.volume,
+        "free_bytes": status.free_bytes,
+        "last_taken": status.last_taken,
+        "last_snapshot": status.last_snapshot,
+        "photos_not_backed_up": status.photos_not_backed_up,
+        "sidecars_changed": status.sidecars_changed,
+        "progress": {
+            "status": progress.status,
+            "done": progress.done,
+            "total": progress.total,
+            "current": progress.current,
+            "seconds": round(progress.seconds, 1),
+            "error": progress.error,
+            "result": None if result is None else {
+                "snapshot": result.snapshot.name,
+                "files": result.files,
+                "copied": result.copied,
+                "linked": result.linked,
+                "bytes_copied": result.bytes_copied,
+                "bytes_linked": result.bytes_linked,
+                "incremental_from": result.incremental_from,
+            },
+        },
     }
 
 

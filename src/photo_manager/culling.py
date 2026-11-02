@@ -50,12 +50,10 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-import plistlib
 import re
 import shutil
 import string
 import struct
-import subprocess
 import sys
 import uuid
 from collections.abc import Container, Iterable, Mapping
@@ -64,6 +62,7 @@ from pathlib import Path
 
 from .cards import CardPhoto, CardScan
 from .config import Settings
+from .macos import diskutil_info as _diskutil_info
 
 __all__ = [
     "Verdict",
@@ -250,21 +249,6 @@ def _proves(serial: str, volume_uuid: uuid.UUID, kind: str, sectors: int) -> boo
         uuid.uuid3(_APPLE_VOLUME_NAMESPACE, packed + struct.pack("<I", total)) == volume_uuid
         for total in range(sectors, max(sectors - _FAT_SECTOR_SLACK, 0), -1)
     )
-
-
-def _diskutil_info(path: str | Path) -> dict | None:
-    """``diskutil info`` for the volume *path* is on, or None."""
-    mount = Path(path).resolve()
-    while not os.path.ismount(mount) and mount != mount.parent:
-        mount = mount.parent
-    try:
-        result = subprocess.run(
-            ["diskutil", "info", "-plist", str(mount)],
-            capture_output=True, timeout=15, check=True,
-        )
-        return plistlib.loads(result.stdout)
-    except (OSError, subprocess.SubprocessError, plistlib.InvalidFileException):
-        return None
 
 
 def known_serials(settings: Settings) -> tuple[str, ...]:
