@@ -129,6 +129,19 @@ body {
 .chip--imported { border-color: color-mix(in srgb, var(--imported) 60%, var(--line)); }
 .chip--rescued { border-color: color-mix(in srgb, var(--rescued) 50%, var(--line)); }
 
+/* Where each frame has got to. The same six colours as the tile badges, so a
+ * count and the tiles it counts read as one thing. */
+.lifecycle { margin: 12px 0 0; }
+.lifecycle__chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.chip--stage-undecided { border-style: dashed; }
+.chip--stage-keep { border-color: var(--new); }
+.chip--stage-skip { border-color: var(--imported); }
+.chip--stage-likely-in-library { border-color: var(--likely); border-style: dashed; }
+.chip--stage-in-library { border-color: var(--likely); }
+.chip--stage-backed-up { border-color: var(--rescued); }
+.lifecycle__format { margin: 8px 0 0; font-size: 13px; color: #f0c98a; }
+.lifecycle__format--safe { color: var(--new); }
+
 .progress { margin-top: 12px; max-width: 520px; }
 .progress__track { height: 4px; background: #2a2e36; border-radius: 2px; overflow: hidden; }
 .progress__bar { height: 100%; width: 0; background: var(--likely); transition: width 0.3s linear; }
@@ -206,7 +219,14 @@ body {
 /* The four dedup states, drawn so that no two of them can be mistaken for
  * each other. This is the acceptance criterion, in CSS. */
 
-.tile--new .tile__badge { display: none; }
+/* Every tile carries its stage. Undecided is the quiet one, because on a
+ * fresh card it is nearly all of them. */
+.tile--stage-undecided .tile__badge { color: var(--text-dim); }
+.tile--stage-keep .tile__badge { color: var(--new); }
+.tile--stage-skip .tile__badge { color: var(--imported); text-decoration: line-through; }
+.tile--stage-in-library .tile__badge { color: var(--likely); }
+.tile--stage-backed-up .tile__badge { color: var(--rescued); }
+.tile--stage-skip .tile__image { opacity: 0.5; }
 
 .tile--likely-imported .tile__frame { border: 1px dashed var(--likely); }
 .tile--likely-imported .tile__image { opacity: 0.42; filter: grayscale(0.5); }
@@ -256,7 +276,13 @@ body {
   flex: 1;
   min-height: 0;
   display: grid;
+  /* One track the size of the stage, not of the photograph. With the default
+   * auto track the image's max-height: 100% had nothing definite to be a
+   * percentage of, so a 1560 px preview pushed the verdict bar off a
+   * laptop screen — and the strip above every page made it worse. */
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
+  overflow: hidden;
   padding: 10px 14px;
   background: #0d0f12;
 }
@@ -309,6 +335,29 @@ body {
   color: var(--text-dim);
 }
 .verdict__progress { color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+.verdict__meaning { color: var(--text-dim); font-size: 12px; }
+
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 6px 18px 8px;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--line);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.keys kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  text-align: center;
+  color: var(--accent);
+}
 
 .warning, .notice {
   margin: 0;

@@ -54,7 +54,7 @@ from pydantic import BaseModel, Field
 from .. import queries, tagging, vocabulary
 from .. import backup
 from ..backup import BackupError
-from ..cards import CardError, CardLocation, CardPhoto, CardScan
+from ..cards import CardError, CardLocation, CardPhoto, CardScan, Dedup
 from ..catalog import Catalog
 from ..config import Settings
 from ..culling import Decision, Resume, Tally, Verdict
@@ -1307,6 +1307,7 @@ def _json(payload: dict[str, Any]) -> Response:
 
 def _session_payload(state: AppState, session: CardSession) -> dict[str, Any]:
     scan = session.scan
+    stages = _frame_stages(state, session)
     return {
         "scan_id": session.scan_id,
         "scanned_at": session.scanned_at.isoformat(timespec="seconds"),
@@ -1316,11 +1317,82 @@ def _session_payload(state: AppState, session: CardSession) -> dict[str, Any]:
         "bytes": {"jpeg": scan.jpeg_bytes, "total": scan.total_bytes},
         "confirm": _confirm_payload(session.confirm.snapshot()),
         "cull": _cull_payload(state, session),
+        "lifecycle": _lifecycle_payload(stages),
         "photos": [
-            _photo_payload(session.scan_id, index, photo)
+            {**_photo_payload(session.scan_id, index, photo), **stages[index]}
             for index, photo in enumerate(scan.photos)
         ],
         "ignored": [path.name for path in scan.ignored],
+    }
+
+
+class Stage:
+    """Where one frame on the card has got to, in the order it gets there.
+
+    The question this answers is the one a person holding the card asks: is
+    this photograph safe anywhere else yet? Nothing in this app deletes from
+    the card, so *skip* means "not imported", and the card is only ever
+    emptied by formatting it in the camera.
+    """
+
+    UNDECIDED = "undecided"
+    SKIP = "skip"
+    KEEP = "keep"
+    #: A library photograph has this filename; the bytes are not yet compared.
+    LIKELY_IN_LIBRARY = "likely-in-library"
+    IN_LIBRARY = "in-library"
+    BACKED_UP = "backed-up"
+
+    ALL = (UNDECIDED, SKIP, KEEP, LIKELY_IN_LIBRARY, IN_LIBRARY, BACKED_UP)
+
+
+def _frame_stages(state: AppState, session: CardSession) -> list[dict[str, Any]]:
+    """Each frame's :class:`Stage`, and whether its library copy is backed up.
+
+    ``backed_up`` is None where it cannot be said — the frame is not in the
+    library, or there is no backup to ask, or the drive did not answer — so
+    a page never draws "unknown" as "no".
+    """
+    backed_up = state.backed_up_hashes()
+    hashes = state.catalog_hashes()
+    stages: list[dict[str, Any]] = []
+    for index, photo in enumerate(session.scan.photos):
+        library_hash = hashes.get(photo.matched_photo_id) if photo.matched_photo_id else None
+        in_backup = (
+            None if backed_up is None or library_hash is None else library_hash in backed_up
+        )
+        if photo.dedup == Dedup.IMPORTED:
+            stage = Stage.BACKED_UP if in_backup else Stage.IN_LIBRARY
+        elif photo.dedup == Dedup.LIKELY_IMPORTED:
+            stage = Stage.LIKELY_IN_LIBRARY
+        else:
+            decision = session.decisions.get(index)
+            verdict = decision.verdict if decision is not None else Verdict.UNDECIDED
+            stage = {Verdict.KEEP: Stage.KEEP, Verdict.SKIP: Stage.SKIP}.get(
+                verdict, Stage.UNDECIDED
+            )
+            in_backup = None
+        stages.append({"stage": stage, "backed_up": in_backup})
+    return stages
+
+
+def _lifecycle_payload(stages: list[dict[str, Any]]) -> dict[str, Any]:
+    """How many frames are at each stage, and whether the card can be
+    formatted without losing anything that was not deliberately skipped."""
+    counts = {stage: 0 for stage in Stage.ALL}
+    for frame in stages:
+        counts[frame["stage"]] += 1
+    blocking = {
+        Stage.UNDECIDED: "not decided yet",
+        Stage.KEEP: "kept but not imported yet",
+        Stage.LIKELY_IN_LIBRARY: "in the library by name only — confirm by hash",
+        Stage.IN_LIBRARY: "in the library but not confirmed in the last backup",
+    }
+    reasons = [f"{counts[stage]} {why}" for stage, why in blocking.items() if counts[stage]]
+    return {
+        "counts": counts,
+        "safe_to_format": bool(stages) and not reasons,
+        "reasons": reasons,
     }
 
 

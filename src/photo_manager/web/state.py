@@ -877,6 +877,22 @@ class AppState:
                 ),
             )
 
+    def backed_up_hashes(self) -> frozenset[str] | None:
+        """What the last backup holds, by content hash — or None when there is
+        no backup to ask about or the drive does not answer in time, which a
+        page must show as *unknown* rather than as *not backed up*."""
+        try:
+            return self._bounded("backup-hashes", lambda: backup.backed_up_hashes(self.settings))
+        except FutureTimeout:
+            return None
+
+    def catalog_hashes(self) -> dict[int, str]:
+        """Every catalogued photograph's content hash, by its row id."""
+        with open_catalog(self.settings) as catalog:
+            if catalog is None:
+                return {}
+            return dict(catalog.connection.execute("SELECT id, content_hash FROM photo"))
+
     def card_location(self) -> CardLocation:
         """Where the card is now, located rather than scanned, within a time limit."""
         try:

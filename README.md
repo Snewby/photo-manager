@@ -206,13 +206,30 @@ one keystroke each:
 | `U` | undo this frame's decision |
 | `G` / `Esc` | back to the grid |
 
-Press `?` for that list in the app.
+The keys are listed along the bottom of the screen, and `?` adds a note on what each
+one does.
 
 **Nothing is copied, moved or deleted.** Each decision is appended to
 `state\cull\<card-key>.jsonl` and fsynced before the keystroke is acknowledged, so
 closing the app — or killing it — loses nothing and reopening resumes at the first frame
 you had not judged. Changing your mind is another line; the last one wins. The import
 that acts on all this is a separate, later step.
+
+**Where every frame has got to.** Each tile on the card page has a badge:
+
+| Badge | Means |
+|---|---|
+| *undecided* | not culled yet |
+| *keep* | copied into the library at the next import |
+| *skip* | left out of the import; it stays on the card |
+| *in library?* | a library photo has this filename, not yet confirmed by hash |
+| *in library* | confirmed by hash, but not in the last backup |
+| *backed up* | in the library and in the last backup snapshot |
+
+The page counts each badge and says whether the card is **safe to format in the
+camera**: every frame either backed up or deliberately skipped. If it isn't, the page
+says what is in the way. Nothing in this app deletes from the card; formatting it in the
+camera is the only thing that does.
 
 The header keeps a running count of keepers and what they will cost against the free
 space on the library volume, **measured as you go**, and warns before the keepers would

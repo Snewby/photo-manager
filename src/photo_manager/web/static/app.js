@@ -32,6 +32,23 @@ const DEDUP = {
   },
 };
 
+/* Where a frame has got to (the server's Stage). The badge on every tile, so
+ * "is this one safe yet?" is answered by looking rather than by clicking. */
+const STAGE = {
+  'undecided': { badge: 'undecided', title: 'Not decided yet. Open the cull to keep or skip it.' },
+  'keep': { badge: 'keep', title: 'Kept. It is copied into the library when you press Import.' },
+  'skip': {
+    badge: 'skip',
+    title: 'Skipped: it will not be imported. It stays on the card until the card is formatted in the camera.',
+  },
+  'likely-in-library': {
+    badge: 'in library?',
+    title: 'A library photo has this filename. Confirm by hash to be sure it is this one.',
+  },
+  'in-library': { badge: 'in library', title: 'In the library, but not in the last backup. Press Back up now.' },
+  'backed-up': { badge: 'backed up', title: 'In the library and in the last backup on the backup drive.' },
+};
+
 const el = (id) => document.getElementById(id);
 const state = { scanId: null, polling: null, lastImport: null };
 
@@ -92,7 +109,8 @@ function render(card) {
     + (card.counts.ignored ? ` · ${card.counts.ignored} non-image files ignored` : '')
     + '.';
 
-  renderGrid(card.photos);
+  renderGrid(card.photos, card.cull.decisions);
+  renderLifecycle(card.lifecycle);
   renderConfirm(card.confirm, card.counts.dedup);
   renderCull(card.cull, card.counts.to_cull);
   renderImport(card.cull.tally, card.cull.import);
@@ -139,28 +157,53 @@ function showStatus(status, message) {
   el('status-message').textContent = message;
 }
 
-function renderGrid(photos) {
+/* The card-level answer: how many frames are at each stage, and whether the
+ * card can be formatted in the camera without losing a frame that was not
+ * deliberately skipped. */
+function renderLifecycle(lifecycle) {
+  for (const [stage, count] of Object.entries(lifecycle.counts)) {
+    const cell = el(`stage-${stage}`);
+    if (cell) cell.textContent = count.toLocaleString();
+  }
+  const note = el('format-note');
+  note.className = lifecycle.safe_to_format
+    ? 'lifecycle__format lifecycle__format--safe'
+    : 'lifecycle__format';
+  note.textContent = lifecycle.safe_to_format
+    ? 'Safe to format this card in the camera: every photo is backed up or was skipped on purpose.'
+    : `Not safe to format yet: ${lifecycle.reasons.join(', ')}. `
+      + 'Nothing here deletes from the card — formatting it in the camera is the only thing that does.';
+}
+
+function renderGrid(photos, decisions) {
   const template = el('tile-template');
   const fragment = document.createDocumentFragment();
 
   for (const photo of photos) {
     const tile = template.content.firstElementChild.cloneNode(true);
     const meaning = DEDUP[photo.dedup] || { label: photo.dedup, title: '' };
+    const stage = STAGE[photo.stage] || { badge: photo.stage, title: '' };
 
-    tile.className = `tile tile--${photo.dedup}`;
+    tile.className = `tile tile--${photo.dedup} tile--stage-${photo.stage}`;
     tile.dataset.index = photo.index;
 
     const image = tile.querySelector('.tile__image');
     image.src = photo.thumbnail_url;
-    image.alt = `${photo.name} — ${meaning.label}`;
+    image.alt = `${photo.name} — ${stage.badge} (${meaning.label})`;
     // FR-1.3c, at the tile level: an unreadable frame is one gap, not a hole
     // in the grid and certainly not a failed page.
     image.addEventListener('error', () => tile.classList.add('tile--broken'), { once: true });
 
+    const decision = decisions[String(photo.index)];
+    let label = stage.badge;
+    if (photo.stage === 'keep' && decision) {
+      if (decision.rating) label += ` ${'★'.repeat(decision.rating)}`;
+      if (decision.keep_raw) label += ' + RAW';
+    }
+    if (photo.stage === 'likely-in-library' && photo.backed_up) label += ' · backed up';
     const badge = tile.querySelector('.tile__badge');
-    badge.hidden = photo.dedup === 'new';
-    badge.textContent = meaning.label;
-    badge.title = meaning.title;
+    badge.textContent = label;
+    badge.title = `${stage.title} ${meaning.title}`.trim();
 
     tile.querySelector('.tile__raw').hidden = !photo.has_raw;
     tile.querySelector('.tile__caption').textContent = photo.name;

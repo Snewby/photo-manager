@@ -123,6 +123,15 @@ function showResumed(resumed, resumeAt) {
 
 // --------------------------------------------------------------- rendering
 
+/* What a verdict will do, in the words of the person deciding. Every frame
+ * on offer here is one the library does not have yet (C-3), so none of these
+ * is about a backup — the card page carries that. */
+const MEANING = {
+  undecided: 'Not decided yet — K to keep it, X to skip it.',
+  keep: 'Will be copied into the library when you press Import on the card page.',
+  skip: 'Will not be imported. It stays on the card — nothing here deletes from it.',
+};
+
 function currentIndex() {
   return state.order[state.position];
 }
@@ -168,6 +177,8 @@ function renderVerdict() {
   const raw = el('raw-chip');
   raw.hidden = !decision.keep_raw;
   raw.textContent = photo.has_raw ? '+ RAF' : '+ RAF (none on card)';
+
+  el('meaning').textContent = MEANING[decision.verdict] || '';
 
   const decided = state.order.filter(
     (index) => (state.decisions[String(index)] || {}).decided,

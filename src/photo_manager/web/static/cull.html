@@ -34,9 +34,24 @@
   <span id="verdict-chip" class="verdict__chip">undecided</span>
   <span id="rating" class="verdict__rating" title="0-5 (FR-4.2)"></span>
   <span id="raw-chip" class="verdict__raw" hidden>+ RAW</span>
+  <span id="meaning" class="verdict__meaning"></span>
   <div class="bar__spacer"></div>
   <span id="progress" class="verdict__progress"></span>
 </footer>
+
+<!-- Always on screen. A key you have to remember is a key you have to look
+     up, and the ? panel is one more keystroke away than this. -->
+<nav class="keys" aria-label="Keys">
+  <span><kbd>K</kbd> keep</span>
+  <span><kbd>X</kbd> skip</span>
+  <span><kbd>1</kbd>–<kbd>5</kbd> keep + stars</span>
+  <span><kbd>0</kbd> keep, no stars</span>
+  <span><kbd>R</kbd> also keep RAW</span>
+  <span><kbd>U</kbd> undo</span>
+  <span><kbd>←</kbd> <kbd>→</kbd> previous / next</span>
+  <span><kbd>G</kbd> grid</span>
+  <span><kbd>?</kbd> more</span>
+</nav>
 
 <!-- Five keys to learn, which is FR-4.2's actual target. -->
 <aside id="help" class="help" hidden>
@@ -52,9 +67,12 @@
     <dt>G / Esc</dt><dd>back to the grid</dd>
   </dl>
   <p class="help__note">
-    Nothing is copied or deleted here. Decisions are written to
-    <code>state\cull\</code> as you make them and are still there after a
-    restart; the import is a later step.
+    Nothing is copied or deleted here. <b>Keep</b> marks a frame to be copied
+    into the library when you press Import on the card page; <b>skip</b>
+    leaves it out of the import. Nothing in this app ever deletes from the
+    card — it is only emptied when you format it in the camera, and the card
+    page says when that is safe. Decisions are saved as you make them and are
+    still there after a restart.
   </p>
 </aside>
 

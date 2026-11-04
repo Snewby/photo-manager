@@ -49,6 +49,21 @@
     <p id="progress-text" class="progress__text"></p>
   </div>
 
+  <!-- Where every frame has got to, and whether the card can be formatted.
+       Nothing in this app deletes from the card; formatting it in the camera
+       is the only thing that does, so that is the question answered here. -->
+  <div id="lifecycle" class="lifecycle">
+    <div class="lifecycle__chips">
+      <span class="chip chip--stage-undecided"><b id="stage-undecided">0</b> undecided</span>
+      <span class="chip chip--stage-keep"><b id="stage-keep">0</b> keep — to import</span>
+      <span class="chip chip--stage-skip"><b id="stage-skip">0</b> skip</span>
+      <span class="chip chip--stage-likely-in-library"><b id="stage-likely-in-library">0</b> in library?</span>
+      <span class="chip chip--stage-in-library"><b id="stage-in-library">0</b> in library, not backed up</span>
+      <span class="chip chip--stage-backed-up"><b id="stage-backed-up">0</b> backed up</span>
+    </div>
+    <p id="format-note" class="lifecycle__format"></p>
+  </div>
+
   <p class="summary__note" id="scan-note"></p>
   <p class="summary__note" id="cull-note" hidden></p>
 
@@ -76,7 +91,7 @@
     <a class="tile__link">
     <div class="tile__frame">
       <img class="tile__image" alt="" loading="lazy" decoding="async">
-      <span class="tile__badge" hidden></span>
+      <span class="tile__badge"></span>
       <span class="tile__raw" hidden>RAW</span>
     </div>
     </a>

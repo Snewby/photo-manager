@@ -1098,6 +1098,111 @@ def test_the_stylesheet_draws_each_verdict_differently() -> None:
         assert f".verdict__chip--{verdict}" in styles
 
 
+def test_the_photograph_is_sized_by_the_stage_not_by_itself() -> None:
+    """A 1560 px preview pushed the verdict bar off a laptop screen: the
+    stage's one grid track was sized by its content, so the image's
+    max-height: 100% had nothing to be a percentage of."""
+    styles = _frontend("app.css")
+    stage = styles[styles.index(".stage {"):]
+    stage = stage[:stage.index("}")]
+    assert "grid-template: minmax(0, 1fr) / minmax(0, 1fr)" in stage
+    assert "overflow: hidden" in stage
+
+
+def test_every_key_is_on_screen_without_asking_for_it() -> None:
+    page = _frontend("cull.html")
+    keys = page[page.index('<nav class="keys"'):page.index("</nav>")]
+    for key in ("K", "X", "1", "5", "0", "R", "U", "←", "→", "G", "?"):
+        assert f"<kbd>{key}</kbd>" in keys
+
+
+def test_the_cull_says_what_each_verdict_will_do() -> None:
+    script = _frontend("cull.js")
+    meaning = script[script.index("const MEANING"):]
+    meaning = meaning[:meaning.index("};")]
+    for verdict in (Verdict.UNDECIDED, Verdict.KEEP, Verdict.SKIP):
+        assert f"{verdict}:" in meaning
+
+
+# ----------------------------------------------------------------------
+# Where each frame has got to, and whether the card can be formatted
+# ----------------------------------------------------------------------
+
+
+def test_every_frame_says_where_it_has_got_to(settings: Settings, card: Path) -> None:
+    put(card, "DSCF0001.JPG", fixtures.BURST_FIRST)
+    put(card, "DSCF0002.JPG", fixtures.BURST_SECOND)
+    put(card, "DSCF1029.JPG", fixtures.JPEG_WITHOUT_RAW)
+
+    with client_for(settings) as client:
+        scan_id = client.get("/api/card").json()["scan_id"]
+        decide(client, scan_id, 0, verdict="keep", rating=4)
+        decide(client, scan_id, 1, verdict="skip")
+        payload = client.get("/api/card").json()
+
+    stages = {photo["name"]: photo["stage"] for photo in payload["photos"]}
+    assert stages == {"DSCF0001.JPG": "keep", "DSCF0002.JPG": "skip", "DSCF1029.JPG": "undecided"}
+    assert all(photo["backed_up"] is None for photo in payload["photos"])
+    lifecycle = payload["lifecycle"]
+    assert lifecycle["counts"]["keep"] == 1
+    assert lifecycle["counts"]["skip"] == 1
+    assert lifecycle["counts"]["undecided"] == 1
+    assert lifecycle["safe_to_format"] is False
+    assert lifecycle["reasons"] == ["1 not decided yet", "1 kept but not imported yet"]
+
+
+def test_a_card_is_safe_to_format_only_once_its_keepers_are_backed_up(
+    settings: Settings, card: Path, backup_drive: Path
+) -> None:
+    """In the library is not enough: until the backup holds it, formatting the
+    card would leave one copy, on one disk."""
+    settings = replace(settings, backup_root=backup_drive / "PMB")
+    seed(settings, content_hash=content_hash(fixtures.JPEG_WITHOUT_RAW),
+         library_path="2026/2026-01/DSCF1029.JPG", original_name="DSCF1029.JPG")
+    (settings.library_root / "2026" / "2026-01").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(fixtures.JPEG_WITHOUT_RAW,
+                 settings.library_root / "2026" / "2026-01" / "DSCF1029.JPG")
+    put(card, "DSCF1029.JPG", fixtures.JPEG_WITHOUT_RAW)
+    put(card, "DSCF0002.JPG", fixtures.BURST_SECOND)
+
+    with client_for(settings) as client:
+        scan_id = client.get("/api/card").json()["scan_id"]
+        by_name = lambda payload: {p["name"]: p for p in payload["photos"]}  # noqa: E731
+        likely = by_name(client.get("/api/card").json())["DSCF1029.JPG"]
+
+        client.post(f"/api/card/{scan_id}/confirm")
+        _wait_for_confirm(client, scan_id)
+        index = by_name(client.get("/api/card").json())["DSCF0002.JPG"]["index"]
+        decide(client, scan_id, index, verdict="skip")
+        before = client.get("/api/card").json()
+
+        client.post("/api/backup")
+        deadline = time.monotonic() + 30
+        while client.get("/api/backup").json()["progress"]["status"] == "running":
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        after = client.get("/api/card").json()
+
+    assert likely["stage"] == "likely-in-library"
+    assert by_name(before)["DSCF1029.JPG"]["stage"] == "in-library"
+    assert before["lifecycle"]["safe_to_format"] is False
+    assert before["lifecycle"]["reasons"] == [
+        "1 in the library but not confirmed in the last backup"
+    ]
+    assert by_name(after)["DSCF1029.JPG"]["stage"] == "backed-up"
+    assert by_name(after)["DSCF1029.JPG"]["backed_up"] is True
+    assert after["lifecycle"]["safe_to_format"] is True
+
+
+def test_the_page_draws_every_stage_the_api_can_produce() -> None:
+    from photo_manager.web.app import Stage
+    script, styles, page = _frontend("app.js"), _frontend("app.css"), _frontend("index.html")
+    for stage in Stage.ALL:
+        assert f"'{stage}': {{" in script
+        assert f'id="stage-{stage}"' in page
+        assert f".chip--stage-{stage}" in styles
+
+
 # ----------------------------------------------------------------------
 # Importing (§6.6)
 # ----------------------------------------------------------------------

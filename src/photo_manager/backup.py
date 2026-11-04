@@ -585,18 +585,7 @@ def status(settings: Settings, catalog_hashes: Iterable[str] = ()) -> BackupStat
     except BackupError as exc:
         attached, reason = False, str(exc)
 
-    manifest: dict | None = None
-    if attached:
-        found = _snapshots(_container(destination, library))
-        manifest = found[-1][2] if found else None
-        if manifest is not None:
-            manifest = {**manifest, "snapshot": str(found[-1][1])}
-    if manifest is None:
-        try:
-            recorded = Path(settings.state_dir) / _RECORD_DIR / "latest-manifest.json"
-            manifest = json.loads(recorded.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            manifest = None
+    manifest = _reference_manifest(settings, destination, library, attached)
 
     volume = mount_point(destination).name if attached else None
     free = shutil.disk_usage(_existing(destination)).free if attached else None
@@ -618,6 +607,44 @@ def status(settings: Settings, catalog_hashes: Iterable[str] = ()) -> BackupStat
         photos_not_backed_up=missing, sidecars_changed=sidecars,
         message=reason if not attached else "",
     )
+
+
+def backed_up_hashes(settings: Settings) -> frozenset[str] | None:
+    """The content hashes the last backup holds, or None when there is none.
+
+    The same reference as :func:`status` — the newest snapshot on the drive,
+    else the record kept beside the catalog — so a photograph a page marks as
+    backed up is one the strip counts as backed up.
+    """
+    if settings.backup_root is None:
+        return None
+    library = Path(settings.library_root).resolve()
+    destination = Path(settings.backup_root).expanduser()
+    try:
+        check_destination(library, destination)
+        attached = True
+    except BackupError:
+        attached = False
+    manifest = _reference_manifest(settings, destination, library, attached)
+    if manifest is None:
+        return None
+    return frozenset(entry["sha256"] for entry in manifest.get("files", []))
+
+
+def _reference_manifest(
+    settings: Settings, destination: Path, library: Path, attached: bool
+) -> dict | None:
+    """The manifest "backed up" is measured against: the newest snapshot on
+    the drive when it is attached, else the copy recorded when it was taken."""
+    if attached:
+        found = _snapshots(_container(destination, library))
+        if found:
+            return {**found[-1][2], "snapshot": str(found[-1][1])}
+    try:
+        recorded = Path(settings.state_dir) / _RECORD_DIR / "latest-manifest.json"
+        return json.loads(recorded.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def _sidecars_since(library: Path, manifest: dict) -> int:
