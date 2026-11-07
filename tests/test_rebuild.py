@@ -660,29 +660,25 @@ def test_a_rebuild_of_a_rebuild_is_identical(settings: Settings, tmp_path: Path)
 
 
 @pytest.fixture
-def real_library() -> Settings:
+def real_library(machine_settings: Settings) -> Settings:
     """The configured library, or a skip. Never written to."""
-    try:
-        settings = Settings.load()
-    except Exception as exc:  # noqa: BLE001 — no config on this machine is fine
-        pytest.skip(f"no usable config.toml: {exc}")
+    settings = machine_settings
     if not settings.library_root.is_dir():
         pytest.skip(f"library root absent: {settings.library_root}")
     return settings
 
 
 @pytest.fixture(scope="session")
-def rebuilt_real_library(tmp_path_factory: pytest.TempPathFactory) -> tuple[Settings, object]:
+def rebuilt_real_library(
+    tmp_path_factory: pytest.TempPathFactory, machine_settings: Settings
+) -> tuple[Settings, object]:
     """One rebuild of the real library, shared by every test below.
 
     Hashing a few GB takes seconds, and doing it once per test put
     a minute and a half on the whole suite for no extra coverage — the three
     tests below ask different questions of the *same* rebuild.
     """
-    try:
-        settings = Settings.load()
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"no usable config.toml: {exc}")
+    settings = machine_settings
     if not settings.library_root.is_dir():
         pytest.skip(f"library root absent: {settings.library_root}")
 

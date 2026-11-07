@@ -720,12 +720,9 @@ def test_the_stylesheet_draws_each_dedup_state_differently() -> None:
 
 
 @pytest.mark.needs_card
-def test_the_real_card_renders_through_the_api() -> None:
+def test_the_real_card_renders_through_the_api(machine_settings: Settings) -> None:
     """The only test here that touches the actual reader. Skipped without it."""
-    try:
-        settings = Settings.load()
-    except Exception as exc:  # noqa: BLE001 — no config on this machine is fine
-        pytest.skip(f"no usable config.toml: {exc}")
+    settings = machine_settings
     if not cards.detect_card(settings).found:
         pytest.skip("no card in the reader")
 

@@ -5,13 +5,18 @@ Two standing rules the whole suite obeys (EXECUTION_PLAN.md §4.2):
 * No test depends on the memory card being inserted, or on the real library
   existing. Tests that want either are marked and skipped when it's absent.
 * No test writes inside the real library. Disk-writing tests use ``tmp_path``.
+* No test writes to the real catalog either — not even by opening it, which
+  migrates it. Tests that look at the real machine get :func:`machine_settings`,
+  whose catalog is a throwaway copy.
 """
 
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -21,6 +26,44 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from photo_manager.catalog import Catalog  # noqa: E402
 import make_fixtures  # noqa: E402
 from photo_manager.config import ENV_PREFIX, Settings  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def machine_settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
+    """This machine's config, with the catalog swapped for a throwaway copy.
+
+    For the tests that look at the real library or the real card. Opening a
+    catalog migrates it (catalog.Catalog.open), so a test that only meant to
+    read the real one could still rewrite it — and did, the day schema 2
+    landed, leaving the running app unable to open its own catalog. A copy
+    taken through SQLite's backup API (consistent even mid-write) makes
+    "read, and only read" true: whatever these tests open, migrate or cache
+    lands in a temporary folder.
+
+    Skips when this machine has no usable config.
+    """
+    try:
+        settings = Settings.load()
+    except Exception as exc:  # noqa: BLE001 — no config on this machine is fine
+        pytest.skip(f"no usable config.toml: {exc}")
+
+    state = tmp_path_factory.mktemp("machine-state")
+    copy = state / "catalog.sqlite3"
+    real = settings.database_path
+    if real is not None and Path(real).exists():
+        source = sqlite3.connect(f"file:{Path(real).as_posix()}?mode=ro", uri=True)
+        try:
+            target = sqlite3.connect(copy)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+        finally:
+            source.close()
+    return replace(
+        settings, state_dir=state, database_path=copy,
+        thumbnail_cache_dir=state / "thumbnails",
+    )
 
 
 @pytest.fixture(autouse=True)

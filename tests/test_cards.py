@@ -735,12 +735,9 @@ def test_detection_writes_nothing_even_when_it_finds_nothing(
 
 
 @pytest.fixture
-def real_card() -> Settings:
+def real_card(machine_settings: Settings) -> Settings:
     """The configured machine with a card actually inserted, or a skip."""
-    try:
-        settings = Settings.load()
-    except Exception as exc:  # noqa: BLE001 — no config on this machine is fine
-        pytest.skip(f"no usable config.toml: {exc}")
+    settings = machine_settings
     if not detect_card(settings).found:
         pytest.skip("no card inserted")
     return settings

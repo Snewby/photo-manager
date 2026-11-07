@@ -696,12 +696,9 @@ def test_needs_review_is_true_when_anything_is_flagged(
 
 
 @pytest.fixture
-def real_library() -> Settings:
+def real_library(machine_settings: Settings) -> Settings:
     """The configured library, or a skip. Never written to."""
-    try:
-        settings = Settings.load()
-    except Exception as exc:  # noqa: BLE001 — no config on this machine is fine
-        pytest.skip(f"no usable config.toml: {exc}")
+    settings = machine_settings
     if not settings.library_root.is_dir():
         pytest.skip(f"library root absent: {settings.library_root}")
     return settings
