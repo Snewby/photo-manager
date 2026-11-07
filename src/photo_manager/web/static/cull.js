@@ -127,10 +127,15 @@ function showResumed(resumed, resumeAt) {
  * on offer here is one the library does not have yet (C-3), so none of these
  * is about a backup — the card page carries that. */
 const MEANING = {
-  undecided: 'Not decided yet — K to keep it, X to skip it.',
-  keep: 'Will be copied into the library when you press Import on the card page.',
-  skip: 'Will not be imported. It stays on the card — nothing here deletes from it.',
+  undecided: 'Not decided yet — K to import it, L to leave it on the card, X to reject it.',
+  keep: 'Will be copied to the Mac when you press Import on the card page.',
+  skip: 'Rejected: not imported, and fine to lose when the card is formatted. Nothing here deletes from the card.',
+  leave: 'Left on the card: not imported, and the card page warns before formatting would lose it.',
 };
+
+/* What each verdict is called on screen. "skip" is the word in the decision
+ * file, kept so old files stay valid; the person deciding sees "reject". */
+const VERDICT_LABEL = { undecided: 'undecided', keep: 'import', skip: 'reject', leave: 'leave on card' };
 
 function currentIndex() {
   return state.order[state.position];
@@ -167,7 +172,7 @@ function renderVerdict() {
   const photo = state.photos[currentIndex()];
 
   const chip = el('verdict-chip');
-  chip.textContent = decision.verdict;
+  chip.textContent = VERDICT_LABEL[decision.verdict] || decision.verdict;
   chip.className = `verdict__chip verdict__chip--${decision.verdict}`;
 
   el('rating').textContent = decision.verdict === 'keep'
@@ -293,11 +298,15 @@ window.addEventListener('keydown', (event) => {
   } else if (key === 'x' || key === 'X') {
     decide('skip');
     advance();
+  } else if (key === 'l' || key === 'L') {
+    decide('leave');
+    advance();
   } else if (key === 'r' || key === 'R') {
     // A modifier on the decision, not a decision, so it does not advance —
-    // you flag the RAF while looking at the frame you want it for.
+    // you flag the RAF while looking at the frame you want it for. Only a
+    // keeper has a RAF to pull, so R on a reject or a leave makes it one.
     const current = currentDecision();
-    decide(current.verdict === 'skip' ? 'skip' : 'keep', { keepRaw: !current.keep_raw });
+    decide('keep', { keepRaw: current.verdict === 'keep' ? !current.keep_raw : true });
   } else if (key === 'u' || key === 'U') {
     decide('undecided');
   } else if (key === 'ArrowRight' || key === ' ') {

@@ -91,13 +91,18 @@ class Verdict:
 
     #: Not looked at yet, or explicitly cleared. The resume point.
     UNDECIDED = "undecided"
-    #: Import this one.
+    #: Import this one to the Mac.
     KEEP = "keep"
-    #: Leave it on the card. Note that *nothing is deleted* — §2 forbids any
-    #: destructive card operation — so a skip is "do not copy", not "discard".
+    #: **Reject**: do not import, and it is fine to lose when the card is
+    #: formatted. Spelled "skip" because that is what every decision file
+    #: already on disk says. Note that *nothing is deleted* — §2 forbids any
+    #: destructive card operation — so a reject is "do not copy", not "discard".
     SKIP = "skip"
+    #: Do not import, but **keep it on the card**: formatting the card would
+    #: lose it, so the card is not safe to format while any frame says this.
+    LEAVE = "leave"
 
-    ALL = (UNDECIDED, KEEP, SKIP)
+    ALL = (UNDECIDED, KEEP, SKIP, LEAVE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,6 +444,7 @@ class Tally:
     """Keepers, what they will cost, and whether the volume can take them."""
 
     keepers: int
+    #: Rejected: fine to lose when the card is formatted.
     skipped: int
     undecided: int
     #: How many of the keepers are also pulling their RAF (D-2).
@@ -449,6 +455,8 @@ class Tally:
     raw_bytes: int
     #: Free space on the library volume, **measured now** (C-2).
     free_bytes: int
+    #: Chosen to stay on the card: not imported, and not to be lost either.
+    left: int = 0
 
     @property
     def total_bytes(self) -> int:
@@ -487,7 +495,7 @@ def tally(
     being expanded separately, so a hardcoded capacity would be wrong within
     the month and wrong silently.
     """
-    keepers = skipped = undecided = raw_keepers = 0
+    keepers = skipped = left = undecided = raw_keepers = 0
     jpeg_bytes = raw_bytes = 0
 
     for index, photo in enumerate(photos):
@@ -496,6 +504,9 @@ def tally(
         decision = decisions.get(index, _UNDECIDED)
         if decision.verdict == Verdict.SKIP:
             skipped += 1
+            continue
+        if decision.verdict == Verdict.LEAVE:
+            left += 1
             continue
         if not decision.decided:
             undecided += 1
@@ -517,6 +528,7 @@ def tally(
         jpeg_bytes=jpeg_bytes,
         raw_bytes=raw_bytes,
         free_bytes=free_bytes,
+        left=left,
     )
 
 

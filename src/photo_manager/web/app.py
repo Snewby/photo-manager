@@ -99,13 +99,13 @@ _THUMBNAIL_CACHE_CONTROL = "private, max-age=86400, immutable"
 class DecisionBody(BaseModel):
     """What the browser is allowed to say about a frame.
 
-    Validated rather than trusted: ``verdict`` is one of three words and
+    Validated rather than trusted: ``verdict`` is one of four words and
     ``rating`` is 0-5, and both are checked here as well as in
     :class:`~photo_manager.culling.Decision`, so a malformed request is a 422
     with a sentence rather than a 500 from a dataclass three layers down.
     """
 
-    verdict: Literal["undecided", "keep", "skip"] = Verdict.UNDECIDED
+    verdict: Literal["undecided", "keep", "skip", "leave"] = Verdict.UNDECIDED
     rating: int = Field(default=0, ge=0, le=5)
     keep_raw: bool = False
 
@@ -1461,19 +1461,21 @@ class Stage:
 
     The question this answers is the one a person holding the card asks: is
     this photograph safe anywhere else yet? Nothing in this app deletes from
-    the card, so *skip* means "not imported", and the card is only ever
-    emptied by formatting it in the camera.
+    the card, so *skip* (shown as "reject") means "not imported, fine to
+    lose", *leave* means "not imported, and not to be lost", and the card is
+    only ever emptied by formatting it in the camera.
     """
 
     UNDECIDED = "undecided"
     SKIP = "skip"
+    LEAVE = "leave"
     KEEP = "keep"
     #: A library photograph has this filename; the bytes are not yet compared.
     LIKELY_IN_LIBRARY = "likely-in-library"
     IN_LIBRARY = "in-library"
     BACKED_UP = "backed-up"
 
-    ALL = (UNDECIDED, SKIP, KEEP, LIKELY_IN_LIBRARY, IN_LIBRARY, BACKED_UP)
+    ALL = (UNDECIDED, SKIP, LEAVE, KEEP, LIKELY_IN_LIBRARY, IN_LIBRARY, BACKED_UP)
 
 
 def _frame_stages(state: AppState, session: CardSession) -> list[dict[str, Any]]:
@@ -1505,7 +1507,9 @@ def _frame_stages(state: AppState, session: CardSession) -> list[dict[str, Any]]
         else:
             decision = session.decisions.get(index)
             verdict = decision.verdict if decision is not None else Verdict.UNDECIDED
-            stage = {Verdict.KEEP: Stage.KEEP, Verdict.SKIP: Stage.SKIP}.get(
+            stage = {
+                Verdict.KEEP: Stage.KEEP, Verdict.SKIP: Stage.SKIP, Verdict.LEAVE: Stage.LEAVE,
+            }.get(
                 verdict, Stage.UNDECIDED
             )
             in_backup = None
@@ -1517,13 +1521,17 @@ def _lifecycle_payload(
     stages: list[dict[str, Any]], *, archive: bool = False
 ) -> dict[str, Any]:
     """How many frames are at each stage, and whether the card can be
-    formatted without losing anything that was not deliberately skipped."""
+    formatted without losing anything that was not deliberately rejected.
+
+    A frame the user chose to *leave on the card* blocks it too: formatting
+    would lose exactly the thing they asked to keep there."""
     counts = {stage: 0 for stage in Stage.ALL}
     for frame in stages:
         counts[frame["stage"]] += 1
     blocking = {
         Stage.UNDECIDED: "not decided yet",
         Stage.KEEP: "kept but not imported yet",
+        Stage.LEAVE: "you chose to leave on the card would be lost",
         Stage.LIKELY_IN_LIBRARY: "in the library by name only — confirm by hash",
         Stage.IN_LIBRARY: (
             "on the Mac but not yet on the archive drive" if archive
@@ -1762,6 +1770,7 @@ def _tally_payload(tally: Tally) -> dict[str, Any]:
     return {
         "keepers": tally.keepers,
         "skipped": tally.skipped,
+        "left": tally.left,
         "undecided": tally.undecided,
         "raw_keepers": tally.raw_keepers,
         "jpeg_bytes": tally.jpeg_bytes,

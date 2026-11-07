@@ -35,11 +35,15 @@ const DEDUP = {
 /* Where a frame has got to (the server's Stage). The badge on every tile, so
  * "is this one safe yet?" is answered by looking rather than by clicking. */
 const STAGE = {
-  'undecided': { badge: 'undecided', title: 'Not decided yet. Open the cull to keep or skip it.' },
+  'undecided': { badge: 'undecided', title: 'Not decided yet. Open the cull to import, leave or reject it.' },
   'keep': { badge: 'keep', title: 'Kept. It is copied into the library when you press Import.' },
   'skip': {
-    badge: 'skip',
-    title: 'Skipped: it will not be imported. It stays on the card until the card is formatted in the camera.',
+    badge: 'reject',
+    title: 'Rejected: it will not be imported, and it is fine to lose when the card is formatted in the camera.',
+  },
+  'leave': {
+    badge: 'leave on card',
+    title: 'Left on the card: not imported. Formatting the card would lose it, so the card is not safe to format.',
   },
   'likely-in-library': {
     badge: 'in library?',
@@ -187,8 +191,8 @@ function renderLifecycle(lifecycle) {
     : 'lifecycle__format';
   note.textContent = lifecycle.safe_to_format
     ? (lifecycle.archive
-      ? 'Safe to format this card in the camera: every photo is on the archive drive or was skipped on purpose.'
-      : 'Safe to format this card in the camera: every photo is backed up or was skipped on purpose.')
+      ? 'Safe to format this card in the camera: every photo is on the archive drive or was rejected on purpose.'
+      : 'Safe to format this card in the camera: every photo is backed up or was rejected on purpose.')
     : `Not safe to format yet: ${lifecycle.reasons.join(', ')}. `
       + 'Nothing here deletes from the card — formatting it in the camera is the only thing that does.';
 }

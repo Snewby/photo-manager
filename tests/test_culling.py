@@ -389,6 +389,34 @@ def test_the_tally_counts_the_three_states(settings: Settings) -> None:
     assert (result.keepers, result.skipped, result.undecided) == (1, 1, 1)
 
 
+def test_a_frame_left_on_the_card_is_neither_a_keeper_nor_undecided(
+    settings: Settings,
+) -> None:
+    """LEAVE is its own count. Counting it as a keeper would import it; as
+    undecided, the cull would never finish."""
+    photos = [photo("A.JPG", size=10), photo("B.JPG", size=999), photo("C.JPG")]
+    decisions = {
+        0: Decision(verdict=Verdict.KEEP),
+        1: Decision(verdict=Verdict.LEAVE),
+        2: Decision(verdict=Verdict.SKIP),
+    }
+
+    result = tally(photos, decisions, settings, free_bytes=10 ** 12)
+    assert (result.keepers, result.left, result.skipped, result.undecided) == (1, 1, 1, 0)
+    assert result.total_bytes == 10
+
+
+def test_a_leave_survives_being_written_down_and_read_back(store: CullStore) -> None:
+    key = PhotoKey("100_FUJI", "DSCF0007.JPG", 14_000_000)
+    store.record(key, Decision(verdict=Verdict.LEAVE))
+
+    decisions, unreadable = CullStore(store.path).replay()
+    assert decisions[key].verdict == Verdict.LEAVE
+    assert decisions[key].decided is True
+    assert decisions[key].keeps is False
+    assert unreadable == 0
+
+
 def test_only_keepers_cost_anything(settings: Settings) -> None:
     photos = [photo("A.JPG", size=10), photo("B.JPG", size=999)]
     decisions = {0: Decision(verdict=Verdict.KEEP), 1: Decision(verdict=Verdict.SKIP)}

@@ -136,6 +136,7 @@ body {
 .chip--stage-undecided { border-style: dashed; }
 .chip--stage-keep { border-color: var(--new); }
 .chip--stage-skip { border-color: var(--imported); }
+.chip--stage-leave { border-color: var(--bad, #d9534f); border-style: dotted; }
 .chip--stage-likely-in-library { border-color: var(--likely); border-style: dashed; }
 .chip--stage-in-library { border-color: var(--likely); }
 .chip--stage-backed-up { border-color: var(--rescued); }
@@ -227,6 +228,7 @@ body {
 .tile--stage-in-library .tile__badge { color: var(--likely); }
 .tile--stage-backed-up .tile__badge { color: var(--rescued); }
 .tile--stage-skip .tile__image { opacity: 0.5; }
+.tile--stage-leave .tile__badge { color: var(--bad, #d9534f); }
 
 .tile--likely-imported .tile__frame { border: 1px dashed var(--likely); }
 .tile--likely-imported .tile__image { opacity: 0.42; filter: grayscale(0.5); }
@@ -324,6 +326,7 @@ body {
 }
 .verdict__chip--keep { border-color: var(--new); color: var(--new); }
 .verdict__chip--skip { border-color: var(--imported); color: var(--imported); }
+.verdict__chip--leave { border-color: var(--bad, #d9534f); color: var(--bad, #d9534f); border-style: dotted; }
 .verdict__chip--undecided { border-style: dashed; }
 
 .verdict__rating { color: var(--accent); letter-spacing: 2px; }

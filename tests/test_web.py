@@ -816,6 +816,33 @@ def test_a_rating_on_a_skip_is_dropped_rather_than_stored(
     assert body["decision"]["keep_raw"] is False
 
 
+def test_a_frame_left_on_the_card_is_not_imported_and_blocks_formatting(
+    settings: Settings, card: Path
+) -> None:
+    """LEAVE: not imported, like a reject, but formatting would lose it, so the
+    card is not safe to format while one frame says it."""
+    with cull_client(settings, card, "DSCF0001.JPG", "DSCF0002.JPG") as client:
+        scan_id = client.get("/api/card").json()["scan_id"]
+        body = decide(client, scan_id, 0, verdict="leave", rating=5, keep_raw=True).json()
+        decide(client, scan_id, 1, verdict="skip")
+        card_now = client.get("/api/card").json()
+        plan = client.get(f"/api/card/{scan_id}/import").json()
+
+    assert body["decision"] == {
+        "verdict": "leave", "rating": 0, "keep_raw": False, "decided": True,
+    }
+    assert body["tally"]["left"] == 1
+    assert body["tally"]["keepers"] == 0
+    assert body["tally"]["undecided"] == 1
+    assert plan["photos"] == 0
+    stages = [photo["stage"] for photo in card_now["photos"]]
+    assert stages == ["leave", "skip"]
+    lifecycle = card_now["lifecycle"]
+    assert lifecycle["counts"]["leave"] == 1
+    assert lifecycle["safe_to_format"] is False
+    assert lifecycle["reasons"] == ["1 you chose to leave on the card would be lost"]
+
+
 def test_a_rating_outside_zero_to_five_is_refused_at_the_boundary(
     settings: Settings, card: Path
 ) -> None:
@@ -1077,7 +1104,7 @@ def test_the_page_binds_every_key_the_requirement_names() -> None:
     and a missing binding is invisible until someone reaches for it mid-card.
     """
     script = _frontend("cull.js")
-    for key in ("ArrowRight", "ArrowLeft", "'k'", "'x'", "'r'", "RATINGS"):
+    for key in ("ArrowRight", "ArrowLeft", "'k'", "'l'", "'x'", "'r'", "RATINGS"):
         assert key in script
     assert "'0', '1', '2', '3', '4', '5'" in script
 
@@ -1085,13 +1112,14 @@ def test_the_page_binds_every_key_the_requirement_names() -> None:
 def test_the_page_says_what_each_key_does() -> None:
     """Five keys to learn is only true if they are written down somewhere."""
     page = _frontend("cull.html")
-    for described in ("keep, and move on", "skip, and move on", "keep the RAF"):
+    for described in ("keep, and move on", "leave it on the card", "reject, and move on",
+                      "keep the RAF"):
         assert described in page
 
 
 def test_the_stylesheet_draws_each_verdict_differently() -> None:
     styles = _frontend("app.css")
-    for verdict in (Verdict.KEEP, Verdict.SKIP, Verdict.UNDECIDED):
+    for verdict in Verdict.ALL:
         assert f".verdict__chip--{verdict}" in styles
 
 
@@ -1109,7 +1137,7 @@ def test_the_photograph_is_sized_by_the_stage_not_by_itself() -> None:
 def test_every_key_is_on_screen_without_asking_for_it() -> None:
     page = _frontend("cull.html")
     keys = page[page.index('<nav class="keys"'):page.index("</nav>")]
-    for key in ("K", "X", "1", "5", "0", "R", "U", "←", "→", "G", "?"):
+    for key in ("K", "L", "X", "1", "5", "0", "R", "U", "←", "→", "G", "?"):
         assert f"<kbd>{key}</kbd>" in keys
 
 
@@ -1117,7 +1145,7 @@ def test_the_cull_says_what_each_verdict_will_do() -> None:
     script = _frontend("cull.js")
     meaning = script[script.index("const MEANING"):]
     meaning = meaning[:meaning.index("};")]
-    for verdict in (Verdict.UNDECIDED, Verdict.KEEP, Verdict.SKIP):
+    for verdict in Verdict.ALL:
         assert f"{verdict}:" in meaning
 
 
