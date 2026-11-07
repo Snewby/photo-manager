@@ -856,6 +856,24 @@ class AppState:
         with self._lock:
             return self._backup.snapshot()
 
+    def busy(self) -> list[str]:
+        """What stopping the app now would cut short, in words for a dialog.
+
+        A backup left unfinished is a ``.partial`` folder and an import is
+        transactional per file, so neither loses anything — but both would
+        have to be run again, and somebody quitting should know that first.
+        """
+        with self._lock:
+            session, backing_up = self._session, self._backup.running
+        work: list[str] = []
+        if backing_up:
+            work.append("a backup")
+        if session is not None and session.importing.running:
+            work.append("an import")
+        if session is not None and session.confirm.running:
+            work.append("a hash check of the card")
+        return work
+
     def backup_status(self) -> backup.BackupStatus:
         """As :func:`backup.status`, but never stuck on a drive that has hung."""
         def ask() -> backup.BackupStatus:

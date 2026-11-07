@@ -465,6 +465,12 @@ def create_app(
             "backup": _backup_payload(app_state),
         })
 
+    @app.get("/api/busy")
+    def busy() -> Response:
+        """What quitting now would cut short. Asked by the Mac app before it
+        stops the server, so a backup is never ended by a stray ⌘Q unasked."""
+        return _json({"busy": app_state.busy()})
+
     @app.post("/api/card/remount")
     def card_remount() -> Response:
         """Have macOS mount the card read-only, then rescan it (§4.1)."""

@@ -34,10 +34,24 @@ python3 -m venv .venv
 cp config.example.toml config.toml
 ```
 
-**Starting it:** double-click `tools/Photo Manager.command` — or a link to it on the
-Desktop or in the Dock. It starts the app in a Terminal window and opens the browser
-when the app answers; closing that window stops it. If the app is already running it
-just opens the browser.
+**Starting it:** build the Applications app once —
+
+```
+.venv/bin/python tools/make_mac_app.py
+```
+
+— and then open **Photo Manager** from Applications, Launchpad or Spotlight like any
+other app. It starts the web app in the background with no Terminal window, opens
+the browser when it answers, and stays in the Dock while it runs: clicking the Dock
+icon brings the page back, and quitting it stops the app. If a backup, an import or
+a hash check is running, quitting asks first. Output goes to
+`~/Library/Logs/Photo Manager.log`. The app knows the project by its path, so after
+moving the project, run the command again; `--dest` puts it somewhere other than
+`/Applications`.
+
+`tools/Photo Manager.command` is the same thing in a Terminal window, for when the
+output is worth watching: double-click it, and closing the window stops the app. Either
+one finds the other already running and just opens the browser.
 
 **Mount the card read-only, or macOS writes to it.** Mounting a FAT or exFAT
 volume read-write is itself a write: within seconds macOS adds a `.fseventsd`

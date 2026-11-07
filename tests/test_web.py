@@ -2719,6 +2719,24 @@ def test_the_backup_button_takes_a_verified_snapshot_and_the_strip_updates(
     assert verify_snapshot(snapshot)[1] == []
 
 
+def test_the_app_says_what_quitting_would_cut_short(settings: Settings, card: Path) -> None:
+    """Asked by the Mac app before it stops the server (tools/make_mac_app.py)."""
+    state = AppState(settings)
+    with TestClient(create_app(settings, state=state)) as client:
+        put(card, "DSCF0001.JPG", fixtures.BURST_SECOND)
+        client.get("/api/card")
+        idle = client.get("/api/busy").json()
+
+        state._backup.status = web_state.ImportStatus.RUNNING
+        state.session.importing.status = web_state.ImportStatus.RUNNING
+        working = client.get("/api/busy").json()
+        state._backup.status = web_state.ImportStatus.IDLE
+        state.session.importing.status = web_state.ImportStatus.IDLE
+
+    assert idle == {"busy": []}
+    assert working == {"busy": ["a backup", "an import"]}
+
+
 def test_an_import_and_a_backup_never_run_together(
     settings: Settings, card: Path, backup_drive: Path
 ) -> None:
