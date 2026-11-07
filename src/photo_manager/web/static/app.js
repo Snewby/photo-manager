@@ -109,8 +109,9 @@ function render(card) {
     + (card.counts.ignored ? ` · ${card.counts.ignored} non-image files ignored` : '')
     + '.';
 
-  renderGrid(card.photos, card.cull.decisions);
+  // Lifecycle first: it settles what the stage badges are called.
   renderLifecycle(card.lifecycle);
+  renderGrid(card.photos, card.cull.decisions);
   renderConfirm(card.confirm, card.counts.dedup);
   renderCull(card.cull, card.counts.to_cull);
   renderImport(card.cull.tally, card.cull.import);
@@ -161,6 +162,21 @@ function showStatus(status, message) {
  * card can be formatted in the camera without losing a frame that was not
  * deliberately skipped. */
 function renderLifecycle(lifecycle) {
+  // With an archive drive, "backed up" means verified on that drive, and the
+  // words on the page say so rather than leaving it to be inferred.
+  if (lifecycle.archive) {
+    STAGE['in-library'] = {
+      badge: 'on Mac only',
+      title: 'On the Mac, but not on the archive drive yet. Press Archive now.',
+    };
+    STAGE['backed-up'] = {
+      badge: 'on drive',
+      title: 'Copied to the archive drive and verified there.',
+    };
+    for (const label of document.querySelectorAll('[data-archive-label]')) {
+      label.textContent = label.dataset.archiveLabel;
+    }
+  }
   for (const [stage, count] of Object.entries(lifecycle.counts)) {
     const cell = el(`stage-${stage}`);
     if (cell) cell.textContent = count.toLocaleString();
@@ -170,7 +186,9 @@ function renderLifecycle(lifecycle) {
     ? 'lifecycle__format lifecycle__format--safe'
     : 'lifecycle__format';
   note.textContent = lifecycle.safe_to_format
-    ? 'Safe to format this card in the camera: every photo is backed up or was skipped on purpose.'
+    ? (lifecycle.archive
+      ? 'Safe to format this card in the camera: every photo is on the archive drive or was skipped on purpose.'
+      : 'Safe to format this card in the camera: every photo is backed up or was skipped on purpose.')
     : `Not safe to format yet: ${lifecycle.reasons.join(', ')}. `
       + 'Nothing here deletes from the card — formatting it in the camera is the only thing that does.';
 }

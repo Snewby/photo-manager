@@ -7,6 +7,10 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pillow",
+    # Free up Mac space moves files to the Trash rather than deleting them, so
+    # a mistake is a drag back out of the Trash. send2trash does that the
+    # platform's own way on macOS and Windows alike.
+    "send2trash>=1.8",
 ]
 
 [project.optional-dependencies]

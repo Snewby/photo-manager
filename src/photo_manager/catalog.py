@@ -21,14 +21,14 @@ import datetime as dt
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import db
 from .config import Settings
 from .models import Location, Person, Photo, Session, Tag
 
-__all__ = ["Catalog", "CatalogError"]
+__all__ = ["ARCHIVED", "ArchivedFile", "Catalog", "CatalogError"]
 
 
 class CatalogError(Exception):
@@ -56,6 +56,10 @@ def _from_iso(value: str | None) -> dt.datetime | None:
     return None if value is None else dt.datetime.fromisoformat(value)
 
 
+def _flag(value: bool | None) -> int | None:
+    return None if value is None else int(value)
+
+
 class Catalog:
     """The SQLite catalog, open and migrated.
 
@@ -75,6 +79,7 @@ class Catalog:
         self.locations = LocationRepository(self)
         self.people = PersonRepository(self)
         self.tags = TagRepository(self)
+        self.archive = ArchiveRepository(self)
 
     @classmethod
     def open(cls, settings: Settings, *, verify_root: bool = True) -> Catalog:
@@ -166,6 +171,24 @@ class Catalog:
         """The RAF's real path, or None when the RAF was not kept (D-2)."""
         return None if photo.raw_path is None else self._settings.resolve(photo.raw_path)
 
+    def locate(self, library_path: str) -> Path | None:
+        """Where a stored path's file can actually be read from right now.
+
+        The Mac first, then the archive drive — the same relative path in
+        both, since the archive is a mirror — or None when neither has it
+        (removed from the Mac and the drive unplugged, or simply gone).
+        """
+        for candidate in (self._settings.resolve(library_path),
+                          self._settings.resolve_archive(library_path)):
+            if candidate is None:
+                continue
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+        return None
+
 
 class _Repository:
     """Shared plumbing: the connection, and when to commit."""
@@ -199,6 +222,7 @@ class PhotoRepository(_Repository):
         "raw_path", "captured_at", "captured_at_inferred", "imported_at",
         "width", "height", "camera_model", "lens", "exposure", "f_number",
         "iso", "focal_length", "orientation", "rating", "session_id",
+        "on_mac", "keep_on_mac",
     )
 
     @classmethod
@@ -219,8 +243,8 @@ class PhotoRepository(_Repository):
                 content_hash, library_path, original_name, has_raw, raw_path,
                 captured_at, captured_at_inferred, imported_at, width, height,
                 camera_model, lens, exposure, f_number, iso, focal_length,
-                orientation, rating, session_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                orientation, rating, session_id, on_mac, keep_on_mac
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 photo.content_hash,
@@ -242,6 +266,8 @@ class PhotoRepository(_Repository):
                 photo.orientation,
                 photo.rating,
                 photo.session_id,
+                int(photo.on_mac),
+                _flag(photo.keep_on_mac),
             ),
         )
         return replace(photo, id=cursor.lastrowid)
@@ -257,7 +283,8 @@ class PhotoRepository(_Repository):
                 has_raw = ?, raw_path = ?, captured_at = ?,
                 captured_at_inferred = ?, imported_at = ?, width = ?, height = ?,
                 camera_model = ?, lens = ?, exposure = ?, f_number = ?, iso = ?,
-                focal_length = ?, orientation = ?, rating = ?, session_id = ?
+                focal_length = ?, orientation = ?, rating = ?, session_id = ?,
+                on_mac = ?, keep_on_mac = ?
             WHERE id = ?
             """,
             (
@@ -280,6 +307,8 @@ class PhotoRepository(_Repository):
                 photo.orientation,
                 photo.rating,
                 photo.session_id,
+                int(photo.on_mac),
+                _flag(photo.keep_on_mac),
                 photo.id,
             ),
         )
@@ -478,6 +507,8 @@ class PhotoRepository(_Repository):
             orientation=row["orientation"],
             rating=row["rating"],
             session_id=row["session_id"],
+            on_mac=bool(row["on_mac"]),
+            keep_on_mac=None if row["keep_on_mac"] is None else bool(row["keep_on_mac"]),
         )
 
 
@@ -723,3 +754,78 @@ class TagRepository(_VocabularyRepository):
 
     def _to_model(self, row: sqlite3.Row) -> Tag:
         return Tag(id=row["id"], name=row["name"], use_count=row["use_count"])
+
+
+# ----------------------------------------------------------------------
+# The archive drive
+# ----------------------------------------------------------------------
+
+#: The one definition of "this photograph is safe on the archive drive", as SQL
+#: over ``photo p``: its JPEG is there with exactly the bytes the catalog knows,
+#: and so is its RAF when it has one. Sidecars are deliberately not part of it —
+#: a stale .xmp on the drive loses a tag, not a photograph, and the archive run
+#: and *Free up Mac space* both refresh it before it could matter.
+ARCHIVED = (
+    "(EXISTS (SELECT 1 FROM archive_file af"
+    " WHERE af.path = p.library_path AND af.sha256 = p.content_hash)"
+    " AND (p.raw_path IS NULL OR EXISTS (SELECT 1 FROM archive_file ar"
+    " WHERE ar.path = p.raw_path)))"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ArchivedFile:
+    """One file verified on the archive drive, at its library-relative path."""
+
+    path: str
+    sha256: str
+    bytes: int
+    verified_at: dt.datetime
+
+
+class ArchiveRepository(_Repository):
+    """Rows in ``archive_file``: what the drive is known to hold, and since when."""
+
+    def record(self, path: str, sha256: str, size: int, verified_at: dt.datetime) -> None:
+        """Note a file as verified on the drive, replacing an older record."""
+        self._write(
+            "INSERT INTO archive_file (path, sha256, bytes, verified_at) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(path) DO UPDATE SET sha256 = excluded.sha256,"
+            " bytes = excluded.bytes, verified_at = excluded.verified_at",
+            (path, sha256, size, _to_iso(verified_at)),
+        )
+
+    def get(self, path: str) -> ArchivedFile | None:
+        row = self._execute(
+            "SELECT path, sha256, bytes, verified_at FROM archive_file WHERE path = ?", (path,)
+        ).fetchone()
+        return None if row is None else self._to_model(row)
+
+    def all(self) -> dict[str, ArchivedFile]:
+        return {
+            row["path"]: self._to_model(row)
+            for row in self._execute("SELECT path, sha256, bytes, verified_at FROM archive_file")
+        }
+
+    def archived_photo_ids(self) -> set[int]:
+        """Every photograph that is safe on the drive (see :data:`ARCHIVED`)."""
+        return {row[0] for row in self._execute(f"SELECT p.id FROM photo p WHERE {ARCHIVED}")}
+
+    def archived_hashes(self) -> frozenset[str]:
+        """The content hashes of every archived photograph — the archive's
+        answer to the question the card page asks of a backup."""
+        return frozenset(
+            row[0] for row in self._execute(f"SELECT p.content_hash FROM photo p WHERE {ARCHIVED}")
+        )
+
+    def last_verified(self) -> dt.datetime | None:
+        row = self._execute("SELECT max(verified_at) FROM archive_file").fetchone()
+        return _from_iso(row[0]) if row and row[0] else None
+
+    @staticmethod
+    def _to_model(row: sqlite3.Row) -> ArchivedFile:
+        verified_at = _from_iso(row["verified_at"])
+        assert verified_at is not None  # NOT NULL column
+        return ArchivedFile(
+            path=row["path"], sha256=row["sha256"], bytes=row["bytes"], verified_at=verified_at
+        )

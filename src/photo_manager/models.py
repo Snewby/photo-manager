@@ -61,6 +61,14 @@ class Photo:
     rating: int = 0
     session_id: int | None = None
 
+    #: False once *Free up Mac space* has moved this photograph's files off the
+    #: Mac; the archive drive then holds the only copy.
+    on_mac: bool = True
+
+    #: None follows the configured rule; True always keeps it on the Mac; False
+    #: removes it at the next free-up regardless.
+    keep_on_mac: bool | None = None
+
     @property
     def has_raw(self) -> bool:
         """Derived, never stored on the instance, so the two cannot disagree.

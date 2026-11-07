@@ -44,8 +44,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from .. import backup
+from .. import archive, backup, offload
+from ..archive import ArchiveError, ArchiveResult, ArchiveStatus
 from ..backup import BackupError, BackupResult
+from ..offload import OffloadError, OffloadResult
 from ..cards import (
     CardError, CardLocation, CardPhoto, CardScan, Dedup, card_writable, confirm_imports,
     detect_card, remount_read_only, scan_card,
@@ -234,6 +236,54 @@ class BackupProgress:
         )
 
 
+@dataclass
+class ArchiveProgress:
+    """Progress of one archive run. Mutated only under the state lock."""
+
+    status: str = ImportStatus.IDLE
+    done: int = 0
+    total: int = 0
+    current: str | None = None
+    seconds: float = 0.0
+    error: str | None = None
+    result: ArchiveResult | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.status == ImportStatus.RUNNING
+
+    def snapshot(self) -> ArchiveProgress:
+        return ArchiveProgress(
+            status=self.status, done=self.done, total=self.total,
+            current=self.current, seconds=self.seconds, error=self.error,
+            result=self.result,
+        )
+
+
+@dataclass
+class OffloadProgress:
+    """Progress of one *Free up Mac space*. Mutated only under the state lock."""
+
+    status: str = ImportStatus.IDLE
+    done: int = 0
+    total: int = 0
+    current: str | None = None
+    seconds: float = 0.0
+    error: str | None = None
+    result: OffloadResult | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.status == ImportStatus.RUNNING
+
+    def snapshot(self) -> OffloadProgress:
+        return OffloadProgress(
+            status=self.status, done=self.done, total=self.total,
+            current=self.current, seconds=self.seconds, error=self.error,
+            result=self.result,
+        )
+
+
 class CardWritableError(PermissionError):
     """The card is mounted read-write, so culling and importing wait (§4.1).
 
@@ -244,7 +294,8 @@ class CardWritableError(PermissionError):
 
 
 class BusyError(RuntimeError):
-    """An import and a backup would be reading and writing the same library."""
+    """An import, a backup and an archive run would be reading and writing the
+    same library, so only one of them runs at a time."""
 
 
 @dataclass
@@ -356,6 +407,10 @@ class AppState:
         self._import_thread: threading.Thread | None = None
         self._backup = BackupProgress()
         self._backup_thread: threading.Thread | None = None
+        self._archive = ArchiveProgress()
+        self._archive_thread: threading.Thread | None = None
+        self._offload = OffloadProgress()
+        self._offload_thread: threading.Thread | None = None
         # One worker per question asked of a drive, and never more than one of
         # each in flight: if a drive hangs, one thread waits on it rather than
         # every request the page sends.
@@ -712,6 +767,14 @@ class AppState:
                 raise BusyError(
                     "A backup is reading the library. Import when it has finished."
                 )
+            if self._archive.running:
+                raise BusyError(
+                    "The library is being archived. Import when it has finished."
+                )
+            if self._offload.running:
+                raise BusyError(
+                    "Photographs are being moved off the Mac. Import when that has finished."
+                )
             session.importing = ImportProgress(status=ImportStatus.RUNNING)
 
         thread = threading.Thread(
@@ -836,6 +899,14 @@ class AppState:
                 raise BusyError(
                     "An import is writing to the library. Back up when it has finished."
                 )
+            if self._archive.running:
+                raise BusyError(
+                    "The library is being archived. Back up when it has finished."
+                )
+            if self._offload.running:
+                raise BusyError(
+                    "Photographs are being moved off the Mac. Back up when that has finished."
+                )
         # Outside the lock, and bounded: asking a hung drive must not hang this.
         drive = self.backup_status()
         if not drive.configured or not drive.attached:
@@ -856,6 +927,197 @@ class AppState:
         with self._lock:
             return self._backup.snapshot()
 
+    # ------------------------------------------------------------------
+    # Archiving (photo_manager.archive)
+    # ------------------------------------------------------------------
+
+    def start_archive(self) -> ArchiveProgress:
+        """Copy whatever the archive drive is missing, on a thread of its own.
+
+        Refused at once — before the request returns — when there is no archive
+        drive configured, it is not attached, or an import or backup is busy
+        with the same library.
+        """
+        with self._lock:
+            if self._archive.running:
+                return self._archive.snapshot()
+            self._refuse_if_library_busy("Archive")
+        drive = self.archive_status()
+        if not drive.configured or not drive.attached:
+            raise ArchiveError(drive.message)
+        with self._lock:
+            if self._archive.running:
+                return self._archive.snapshot()
+            self._refuse_if_library_busy("Archive")
+            self._archive = ArchiveProgress(status=ImportStatus.RUNNING)
+            thread = threading.Thread(
+                target=self._run_archive, name="archive",
+                daemon=False,  # it is writing to a drive; let it finish
+            )
+            self._archive_thread = thread
+        thread.start()
+        return self.archive_progress()
+
+    def archive_progress(self) -> ArchiveProgress:
+        with self._lock:
+            return self._archive.snapshot()
+
+    def archive_status(self) -> ArchiveStatus:
+        """As :func:`archive.archive_status`, but never stuck on a hung drive."""
+        def ask() -> ArchiveStatus:
+            with open_catalog(self.settings) as catalog:
+                return archive.archive_status(self.settings, catalog)
+
+        try:
+            return self._bounded("archive", ask)
+        except FutureTimeout:
+            return ArchiveStatus(
+                configured=True, attached=False,
+                destination=self.settings.archive_root,
+                message=(
+                    "The archive drive is not responding. Eject it — or unplug it if "
+                    "ejecting hangs too — and plug it back in."
+                ),
+            )
+
+    def archived_hashes(self) -> frozenset[str] | None:
+        """The content hashes of every photograph verified on the archive drive.
+
+        From the catalog, not the drive, so it is known with the drive in a
+        drawer. None when there is no archive configured or no catalog yet.
+        """
+        if self.settings.archive_root is None:
+            return None
+        with open_catalog(self.settings) as catalog:
+            return None if catalog is None else catalog.archive.archived_hashes()
+
+    def _refuse_if_library_busy(self, doing: str) -> None:
+        """Called under the lock: one writer to the library at a time."""
+        session = self._session
+        if session is not None and session.importing.running:
+            raise BusyError(f"An import is writing to the library. {doing} when it has finished.")
+        if self._backup.running:
+            raise BusyError(f"A backup is reading the library. {doing} when it has finished.")
+        if self._archive.running:
+            raise BusyError(f"The library is being archived. {doing} when it has finished.")
+        if self._offload.running:
+            raise BusyError(
+                f"Photographs are being moved off the Mac. {doing} when that has finished."
+            )
+
+    # ------------------------------------------------------------------
+    # Freeing up Mac space (photo_manager.offload)
+    # ------------------------------------------------------------------
+
+    def offload_plan(self) -> offload.OffloadPlan | None:
+        """What *Free up Mac space* would do now; None without an archive or
+        a catalog. Reads the catalog and the Mac only — never the drive."""
+        if self.settings.archive_root is None:
+            return None
+        with open_catalog(self.settings) as catalog:
+            return None if catalog is None else offload.plan_offload(self.settings, catalog)
+
+    def start_offload(self) -> OffloadProgress:
+        """Take the plan's photographs off the Mac, on a thread of its own.
+
+        The plan is made afresh on that thread rather than taken from the
+        page, so what is removed is what the rule says *now*.
+        """
+        with self._lock:
+            if self._offload.running:
+                return self._offload.snapshot()
+            self._refuse_if_library_busy("Free up space")
+        drive = self.archive_status()
+        if not drive.configured or not drive.attached:
+            raise OffloadError(f"Nothing was removed. {drive.message}")
+        with self._lock:
+            if self._offload.running:
+                return self._offload.snapshot()
+            self._refuse_if_library_busy("Free up space")
+            self._offload = OffloadProgress(status=ImportStatus.RUNNING)
+            thread = threading.Thread(target=self._run_offload, name="offload", daemon=False)
+            self._offload_thread = thread
+        thread.start()
+        return self.offload_progress()
+
+    def offload_progress(self) -> OffloadProgress:
+        with self._lock:
+            return self._offload.snapshot()
+
+    def _run_offload(self) -> None:
+        started = time.perf_counter()
+
+        def progress(done: int, total: int, name: str) -> None:
+            with self._lock:
+                self._offload.done = done - 1
+                self._offload.total = total
+                self._offload.current = name
+                self._offload.seconds = time.perf_counter() - started
+
+        try:
+            with open_catalog(self.settings) as catalog:
+                if catalog is None:
+                    raise OffloadError("There is no catalog yet, so nothing to free up.")
+                plan = offload.plan_offload(self.settings, catalog)
+                result = offload.execute_offload(
+                    self.settings, catalog, plan, progress=progress
+                )
+        except (OffloadError, OSError) as exc:
+            status, error, result = ImportStatus.FAILED, str(exc), None
+        else:
+            if result.ok:
+                status, error = ImportStatus.DONE, None
+            else:
+                status = ImportStatus.FAILED
+                error = (
+                    f"{len(result.failures)} photograph(s) were left on the Mac. "
+                    f"First: {result.failures[0]}"
+                )
+        with self._lock:
+            self._offload.status = status
+            self._offload.error = error
+            self._offload.result = result
+            self._offload.current = None
+            self._offload.seconds = time.perf_counter() - started
+            if result is not None:
+                self._offload.done = self._offload.total
+
+    def _run_archive(self) -> None:
+        started = time.perf_counter()
+
+        def progress(done: int, total: int, name: str) -> None:
+            with self._lock:
+                self._archive.done = done - 1
+                self._archive.total = total
+                self._archive.current = name
+                self._archive.seconds = time.perf_counter() - started
+
+        try:
+            with open_catalog(self.settings, create=True) as catalog:
+                assert catalog is not None
+                result = archive.run_archive(self.settings, catalog, progress=progress)
+        except (ArchiveError, OSError) as exc:
+            status, error, result = ImportStatus.FAILED, str(exc), None
+        else:
+            if not result.failures:
+                status = ImportStatus.DONE
+                error = result.snapshot_problem
+            else:
+                status = ImportStatus.FAILED
+                error = (
+                    f"{len(result.failures)} file(s) did not reach the archive drive "
+                    f"intact; they are still owed and will be tried again next time. "
+                    f"First: {result.failures[0]}"
+                )
+        with self._lock:
+            self._archive.status = status
+            self._archive.error = error
+            self._archive.result = result
+            self._archive.current = None
+            self._archive.seconds = time.perf_counter() - started
+            if result is not None:
+                self._archive.done = self._archive.total
+
     def busy(self) -> list[str]:
         """What stopping the app now would cut short, in words for a dialog.
 
@@ -865,9 +1127,15 @@ class AppState:
         """
         with self._lock:
             session, backing_up = self._session, self._backup.running
+            archiving = self._archive.running
+            offloading = self._offload.running
         work: list[str] = []
         if backing_up:
             work.append("a backup")
+        if archiving:
+            work.append("an archive to the drive")
+        if offloading:
+            work.append("freeing up Mac space")
         if session is not None and session.importing.running:
             work.append("an import")
         if session is not None and session.confirm.running:
@@ -985,6 +1253,12 @@ class AppState:
         backing_up = self._backup_thread
         if backing_up is not None and backing_up.is_alive():
             backing_up.join(timeout=600.0)
+        archiving = self._archive_thread
+        if archiving is not None and archiving.is_alive():
+            archiving.join(timeout=600.0)
+        offloading = self._offload_thread
+        if offloading is not None and offloading.is_alive():
+            offloading.join(timeout=600.0)
         self._previews.shutdown(wait=False)
         for pool, _ in self._probes.values():
             pool.shutdown(wait=False, cancel_futures=True)

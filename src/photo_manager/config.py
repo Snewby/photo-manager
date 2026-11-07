@@ -84,6 +84,21 @@ class Settings:
     #: something the page sends, because no endpoint accepts a path (§4.1).
     backup_root: Path | None = None
 
+    #: Where the full archive of the library lives — a plain mirror of
+    #: ``library_root`` at the same relative paths, on another physical drive,
+    #: e.g. ``/Volumes/My Passport/Photos``. With it set, the Mac holds a
+    #: working set and the drive holds everything: a photograph verified here
+    #: can be removed from the Mac. None means there is no archive and the Mac
+    #: keeps every file, as it always has.
+    archive_root: Path | None = None
+
+    #: The rule for what *Free up Mac space* leaves on the Mac: anything taken
+    #: in the last ``keep_on_mac_days`` days, and anything rated at least
+    #: ``keep_on_mac_min_rating``. A photograph pinned with *Keep on Mac* stays
+    #: whatever the rule says.
+    keep_on_mac_days: int = 90
+    keep_on_mac_min_rating: int = 4
+
     #: Long edge of generated thumbnails, in pixels (FR-2.2).
     thumbnail_max_px: int = 400
 
@@ -115,6 +130,13 @@ class Settings:
             raise ConfigError(f"preview_max_px must be positive, got {self.preview_max_px}")
         if self.session_gap_hours <= 0:
             raise ConfigError(f"session_gap_hours must be positive, got {self.session_gap_hours}")
+        if self.keep_on_mac_days < 0:
+            raise ConfigError(f"keep_on_mac_days must not be negative, got {self.keep_on_mac_days}")
+        if not 0 <= self.keep_on_mac_min_rating <= 6:
+            raise ConfigError(
+                "keep_on_mac_min_rating must be 0-6 (6 keeps nothing for its rating), "
+                f"got {self.keep_on_mac_min_rating}"
+            )
 
     # ------------------------------------------------------------------
     # Loading
@@ -165,9 +187,13 @@ class Settings:
 
         kwargs: dict[str, object] = {"source_path": path}
         for name in ("library_root", "card_dcim_root", "state_dir",
-                     "database_path", "thumbnail_cache_dir", "backup_root"):
+                     "database_path", "thumbnail_cache_dir", "backup_root",
+                     "archive_root"):
             if name in data:
                 kwargs[name] = _as_path(name, data[name])
+        for name in ("keep_on_mac_days", "keep_on_mac_min_rating"):
+            if name in data:
+                kwargs[name] = _as_int(name, data[name])
         if "card_folder_glob" in data:
             kwargs["card_folder_glob"] = _as_str("card_folder_glob", data["card_folder_glob"])
         if "thumbnail_max_px" in data:
@@ -233,14 +259,18 @@ class Settings:
 
     def resolve(self, library_path: str | os.PathLike[str]) -> Path:
         """Turn a stored relative ``library_path`` back into an absolute path."""
-        candidate = PurePosixPath(str(library_path).replace("\\", "/"))
-        if candidate.is_absolute() or Path(library_path).is_absolute():
-            raise ValueError(
-                f"library_path must be relative to the library root, got: {library_path}"
-            )
-        if ".." in candidate.parts:
-            raise ValueError(f"library_path must not escape the library root: {library_path}")
-        return self.library_root.joinpath(*candidate.parts)
+        return self.library_root.joinpath(*_relative_parts(library_path))
+
+    def resolve_archive(self, library_path: str | os.PathLike[str]) -> Path | None:
+        """The same stored path, but in the archive on the drive.
+
+        None when no archive is configured. Says nothing about whether the
+        drive is attached or the file is there — the archive is a mirror at the
+        same relative paths, so this is only arithmetic.
+        """
+        if self.archive_root is None:
+            return None
+        return self.archive_root.joinpath(*_relative_parts(library_path))
 
     def card_image_folders(self) -> list[Path]:
         """Every ``1xx_FUJI`` folder under the **configured** DCIM root, sorted.
@@ -255,6 +285,17 @@ class Settings:
         if self.card_dcim_root is None or not self.card_dcim_root.is_dir():
             return []
         return sorted(p for p in self.card_dcim_root.glob(self.card_folder_glob) if p.is_dir())
+
+
+def _relative_parts(library_path: str | os.PathLike[str]) -> tuple[str, ...]:
+    candidate = PurePosixPath(str(library_path).replace("\\", "/"))
+    if candidate.is_absolute() or Path(library_path).is_absolute():
+        raise ValueError(
+            f"library_path must be relative to the library root, got: {library_path}"
+        )
+    if ".." in candidate.parts:
+        raise ValueError(f"library_path must not escape the library root: {library_path}")
+    return candidate.parts
 
 
 def _as_path(name: str, value: object) -> Path:

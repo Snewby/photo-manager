@@ -118,8 +118,12 @@ def test_migrating_twice_changes_nothing(connection: sqlite3.Connection) -> None
 # throwaway second migration for the real schema. What matters is that the
 # machinery works on a populated database, not what version 2 eventually is.
 
+#: The next version after the shipped ones, so these tests keep exercising the
+#: machinery whatever the real schema has grown to.
+_NEXT = db.SCHEMA_VERSION + 1
+
 _ADD_A_COLUMN = Migration(
-    2, "add a column", "ALTER TABLE person ADD COLUMN nickname TEXT;"
+    _NEXT, "add a column", "ALTER TABLE person ADD COLUMN nickname TEXT;"
 )
 
 
@@ -132,8 +136,8 @@ def test_a_migration_applies_cleanly_to_an_existing_database(
 
     applied = db.migrate(connection, MIGRATIONS + (_ADD_A_COLUMN,))
 
-    assert [m.version for m in applied] == [2]
-    assert db.schema_version(connection) == 2
+    assert [m.version for m in applied] == [_NEXT]
+    assert db.schema_version(connection) == _NEXT
     # The existing row survived, and the new column is there and empty.
     row = connection.execute("SELECT name, use_count, nickname FROM person").fetchone()
     assert (row["name"], row["use_count"], row["nickname"]) == ("Alice", 3, None)
@@ -142,7 +146,7 @@ def test_a_migration_applies_cleanly_to_an_existing_database(
 def test_migrations_apply_in_order_from_empty(connection: sqlite3.Connection) -> None:
     applied = db.migrate(connection, MIGRATIONS + (_ADD_A_COLUMN,))
 
-    assert [m.version for m in applied] == [1, 2]
+    assert [m.version for m in applied] == list(range(1, _NEXT + 1))
 
 
 def test_a_failing_migration_leaves_the_version_untouched(
@@ -151,13 +155,13 @@ def test_a_failing_migration_leaves_the_version_untouched(
     """A half-applied migration on the owner's only catalog is the bad outcome."""
     db.migrate(connection)
     broken = Migration(
-        2, "broken", "CREATE TABLE half_applied (id INTEGER); CREATE TABLE ;"
+        _NEXT, "broken", "CREATE TABLE half_applied (id INTEGER); CREATE TABLE ;"
     )
 
-    with pytest.raises(MigrationError, match="Migration 2"):
+    with pytest.raises(MigrationError, match=f"Migration {_NEXT}"):
         db.migrate(connection, MIGRATIONS + (broken,))
 
-    assert db.schema_version(connection) == 1
+    assert db.schema_version(connection) == db.SCHEMA_VERSION
     tables = {
         row[0]
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")

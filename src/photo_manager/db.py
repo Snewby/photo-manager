@@ -186,9 +186,42 @@ CREATE INDEX idx_photo_location_location ON photo_location(location_id);
 """
 
 
+_ARCHIVE = r"""
+-- The Mac holds a working set; the archive drive holds everything. on_mac is
+-- whether this photograph's files are still under library_root, which stops
+-- being a given the moment *Free up Mac space* has run.
+ALTER TABLE photo ADD COLUMN on_mac INTEGER NOT NULL DEFAULT 1
+    CHECK (on_mac IN (0, 1));
+
+-- NULL follows the keep_on_mac rule in config.toml; 1 always keeps the photo
+-- on the Mac; 0 removes it at the next free-up whatever the rule says.
+ALTER TABLE photo ADD COLUMN keep_on_mac INTEGER
+    CHECK (keep_on_mac IS NULL OR keep_on_mac IN (0, 1));
+
+CREATE INDEX idx_photo_on_mac ON photo(on_mac);
+
+-- One row per file verified in the archive: a JPEG, a RAF or an .xmp, at the
+-- same relative path it has under library_root. Written only after the copy on
+-- the drive has been read back and hashed, so a row here *is* the answer to
+-- "is this on my drive?" — and it can be given with the drive unplugged.
+CREATE TABLE archive_file (
+    path        TEXT    PRIMARY KEY
+                        CHECK (path <> ''
+                               AND path NOT LIKE '/%'
+                               AND path NOT LIKE '_:/%'
+                               AND instr(path, '\') = 0
+                               AND instr(path, '..') = 0),
+    sha256      TEXT    NOT NULL,
+    bytes       INTEGER NOT NULL CHECK (bytes >= 0),
+    verified_at TEXT    NOT NULL
+);
+"""
+
+
 #: Every migration, in order. Append; never edit one that has shipped.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial schema", _INITIAL_SCHEMA),
+    Migration(2, "archive drive and the Mac working set", _ARCHIVE),
 )
 
 #: The version a freshly migrated catalog ends up at.

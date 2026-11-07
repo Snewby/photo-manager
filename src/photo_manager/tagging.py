@@ -39,12 +39,14 @@ filename in §5.2 was for.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import vocabulary
 from .catalog import Catalog
+from .hashing import content_hash
 from .models import Photo
 from .sidecars import PendingSidecar, prepare_sidecar, sidecar_for, sidecar_path
 
@@ -96,6 +98,9 @@ def _apply(catalog: Catalog, change: Callable[[], Iterable[int]]) -> TagOutcome:
     the new state, and nothing is committed until the files are in place.
     """
     prepared: list[PendingSidecar] = []
+    #: For each prepared sidecar on the archive drive, its library-relative
+    #: path, so the archive's record of it can move with it.
+    on_drive: dict[int, str] = {}
     written: list[Path] = []
     skipped = 0
 
@@ -103,24 +108,39 @@ def _apply(catalog: Catalog, change: Callable[[], Iterable[int]]) -> TagOutcome:
         with catalog.transaction():
             photo_ids = tuple(dict.fromkeys(change()))
 
+            photos: list[Photo] = []
             for photo_id in photo_ids:
                 photo = catalog.photos.get(photo_id)
                 if photo is None:  # pragma: no cover — change() just touched it
                     raise TagError(f"No photograph with id {photo_id}")
+                photos.append(photo)
+            _refuse_if_drive_needed(catalog, photos)
+
+            for photo in photos:
                 tags = sidecar_for(catalog, photo)
-                for path in _photo_files(catalog, photo):
+                for relative, path in _photo_files(catalog, photo):
                     # §5.2: nothing to say and nothing already saying it.
                     if tags.empty and not sidecar_path(path).exists():
                         skipped += 1
                         continue
+                    if not photo.on_mac:
+                        on_drive[len(prepared)] = sidecar_path(relative).as_posix()
                     prepared.append(prepare_sidecar(path, tags))
 
             # Renames first, commit second. A crash in between leaves the
             # sidecars ahead of the catalog, which is the recoverable
             # direction: the catalog is rebuildable from them (NFR-2), and
             # nothing rebuilds them from it.
-            for pending in prepared:
-                written.append(pending.commit())
+            for index, pending in enumerate(prepared):
+                landed = pending.commit()
+                written.append(landed)
+                if index in on_drive:
+                    # Written straight onto the archive drive, so the drive's
+                    # copy is the current one: record it as verified.
+                    catalog.archive.record(
+                        on_drive[index], content_hash(landed), landed.stat().st_size,
+                        dt.datetime.now(),
+                    )
     except BaseException:
         for pending in prepared:
             pending.discard()
@@ -129,13 +149,53 @@ def _apply(catalog: Catalog, change: Callable[[], Iterable[int]]) -> TagOutcome:
     return TagOutcome(photo_ids=photo_ids, sidecars=tuple(written), skipped=skipped)
 
 
-def _photo_files(catalog: Catalog, photo: Photo) -> list[Path]:
-    """The JPEG, and the RAF when it was kept (D-2). Both get a sidecar."""
-    paths = [catalog.absolute_path(photo)]
-    raw = catalog.absolute_raw_path(photo)
-    if raw is not None:
-        paths.append(raw)
-    return paths
+def _photo_files(catalog: Catalog, photo: Photo) -> list[tuple[str, Path]]:
+    """The JPEG, and the RAF when it was kept (D-2). Both get a sidecar.
+
+    Each as its stored relative path and where it is now: on the Mac, or on
+    the archive drive for a photograph that has been removed from the Mac —
+    the sidecar belongs beside the file it describes, wherever that is.
+    """
+    relatives = [photo.library_path] + ([photo.raw_path] if photo.raw_path else [])
+    settings = catalog.settings
+    if photo.on_mac:
+        return [(relative, settings.resolve(relative)) for relative in relatives]
+    found: list[tuple[str, Path]] = []
+    for relative in relatives:
+        path = settings.resolve_archive(relative)
+        assert path is not None  # _refuse_if_drive_needed ran first
+        found.append((relative, path))
+    return found
+
+
+def _refuse_if_drive_needed(catalog: Catalog, photos: Sequence[Photo]) -> None:
+    """Refuse the whole change, before anything is written, when some of these
+    photographs are only on the archive drive and it is not plugged in.
+
+    All or nothing, like every other change here: tagging the forty frames of
+    an outing that are on the Mac and quietly skipping the fourteen that are
+    not would leave the outing saying two things.
+    """
+    away = [photo for photo in photos if not photo.on_mac]
+    if not away:
+        return
+    settings = catalog.settings
+    missing = [
+        photo for photo in away
+        if (folder := _archive_folder(settings, photo)) is None or not folder.is_dir()
+    ]
+    if missing:
+        count = len(missing)
+        raise TagError(
+            f"{count} photograph{'s are' if count != 1 else ' is'} only on the archive "
+            f"drive, which is not plugged in. Plug it in to tag "
+            f"{'them' if count != 1 else 'it'} — nothing has been changed."
+        )
+
+
+def _archive_folder(settings, photo: Photo) -> Path | None:
+    path = settings.resolve_archive(photo.library_path)
+    return None if path is None else path.parent
 
 
 # ----------------------------------------------------------------------

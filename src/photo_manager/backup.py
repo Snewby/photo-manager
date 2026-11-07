@@ -65,6 +65,7 @@ __all__ = [
     "BackupError",
     "BackupResult",
     "BackupStatus",
+    "backed_up_hashes",
     "check_destination",
     "device",
     "latest_snapshot",
@@ -266,11 +267,12 @@ class _Item:
 
 
 def _items(
-    settings: Settings, library: Path, include_app_state: bool, private: Path
+    settings: Settings, library: Path, include_app_state: bool, private: Path,
+    *, include_library: bool = True,
 ) -> list[_Item]:
     items = [
         _Item(path, f"library/{path.relative_to(library).as_posix()}")
-        for path in _files_under(library)
+        for path in (_files_under(library) if include_library else [])
     ]
     if not include_app_state:
         return items
@@ -322,11 +324,17 @@ def take_snapshot(
     label: str = "",
     incremental: bool = True,
     include_app_state: bool = True,
+    include_library: bool = True,
     private_dir: Path | None = None,
     progress: Progress | None = None,
     now: dt.datetime | None = None,
 ) -> BackupResult:
     """Write a verified snapshot to *destination* (``backup_root`` by default).
+
+    *include_library* False leaves the photographs out and keeps only what the
+    library cannot give back — the catalog, cull decisions, private documents
+    and config. That is the snapshot to take once an archive drive holds the
+    photographs themselves (see :mod:`photo_manager.archive`).
 
     Refusals — no destination set, the drive not attached, the library's own
     disk, not enough room — raise :class:`BackupError` before anything is
@@ -347,7 +355,8 @@ def take_snapshot(
     previous = previous_snapshots[-1] if previous_snapshots else None
     previous_entries = _entries(previous[2]) if previous else {}
 
-    items = _items(settings, library, include_app_state, private_dir or PRIVATE_DIR)
+    items = _items(settings, library, include_app_state, private_dir or PRIVATE_DIR,
+                   include_library=include_library)
     needed = sum(
         item.source.stat().st_size for item in items
         if not _probably_linkable(item, previous_entries)

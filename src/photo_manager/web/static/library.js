@@ -136,6 +136,7 @@ const HEADINGS = {
   rating: "Rating",
   year: "Year",
   raw: "RAW",
+  storage: "Where",
 };
 
 function drawFacets(facets) {
@@ -198,6 +199,7 @@ function drawTiles(photos) {
 
     node.querySelector(".card__open").onclick = () => openDetail(photo.id);
     node.querySelector(".card__raw").hidden = !photo.has_raw;
+    node.querySelector(".card__drive").hidden = photo.on_mac !== false;
 
     const when = node.querySelector(".card__when");
     when.textContent = photo.captured_at.slice(0, 10);
@@ -348,6 +350,7 @@ function drawDetail(photo) {
   drawFrameForm(photo);
   drawOutingForm(photo);
   drawFacts(photo);
+  drawStorage(photo);
   $("detail-note").textContent = photo.sidecar
     ? "has an .xmp beside it" : "no .xmp yet";
 }
@@ -434,7 +437,16 @@ function drawFacts(photo) {
     photo.focal_length ? `${photo.focal_length}mm` : null,
   ].filter(Boolean).join(" · ");
 
+  // Where the files are. The first thing to know about a photograph you are
+  // about to free up space for, or about to format a card that holds it.
+  const onMac = photo.on_mac ? "yes" : "removed — the archive drive has the only copy";
+  const onDrive = !photo.archive ? null
+    : photo.archived_at ? `yes, verified ${photo.archived_at.replace("T", " ")}`
+    : "not yet — press Archive now";
+
   const rows = [
+    ["On this Mac", photo.archive ? onMac : null],
+    ["On the archive drive", onDrive],
     ["Taken", photo.captured_at.replace("T", " ") +
       (photo.captured_at_inferred ? "  (from the file's timestamp, not EXIF)" : "")],
     ["Place", photo.location || "—"],
@@ -442,7 +454,7 @@ function drawFacts(photo) {
     ["Lens", photo.lens],
     ["Exposure", exposure],
     ["Pixels", photo.width && photo.height ? `${photo.width} × ${photo.height}` : null],
-    ["Size", photo.bytes === null ? "not on disk" : megabytes(photo.bytes)],
+    ["Size", photo.bytes === null ? (photo.on_mac ? "not on disk" : null) : megabytes(photo.bytes)],
     ["File", photo.library_path],
     ["RAW", photo.raw_path],
     ["Sidecar", photo.sidecar],
@@ -489,6 +501,81 @@ async function saveFrame(body, note) {
     fail(`Not saved — ${exc.message}`);
   }
 }
+
+/* Where it is kept. The pin decides what Free up Mac space may take; the
+ * rule itself is in config.toml, and the strip says what it would free. */
+function drawStorage(photo) {
+  $("storage").hidden = !photo.archive;
+  if (!photo.archive) return;
+  $("keep-on-mac").value = photo.keep_on_mac === true ? "keep"
+    : photo.keep_on_mac === false ? "remove" : "rule";
+  $("restore").hidden = photo.on_mac;
+  $("outing-keep").hidden = photo.session_id === null;
+  $("outing-restore").hidden = photo.session_id === null;
+  $("storage-note").textContent = photo.on_mac
+    ? (photo.archived_at ? "" : "Not on the archive drive yet, so it stays on this Mac.")
+    : "Only on the archive drive. That drive holds the only copy.";
+}
+
+async function storageAction(path, options, done) {
+  clearError();
+  $("storage-note").textContent = "Working…";
+  try {
+    const answer = await api(path, options);
+    await done(answer);
+  } catch (exc) {
+    $("storage-note").textContent = "";
+    fail(exc.message);
+  }
+}
+
+async function redrawDetail(saved) {
+  state.detail = { ...saved, neighbours: state.detail.neighbours };
+  drawDetail(state.detail);
+  drawTile(saved.id, state.detail);
+  const tile = state.tiles.get(saved.id);
+  if (tile) tile.querySelector(".card__drive").hidden = saved.on_mac !== false;
+  await refreshPanel();
+}
+
+$("keep-on-mac").addEventListener("change", () => {
+  const keep = { rule: null, keep: true, remove: false }[$("keep-on-mac").value];
+  storageAction(`/api/library/photos/${state.detail.id}/keep-on-mac`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keep }),
+  }, redrawDetail);
+});
+
+$("restore").addEventListener("click", () => {
+  storageAction(`/api/library/photos/${state.detail.id}/restore`, { method: "POST" },
+    async (answer) => {
+      if (answer.failures.length) fail(answer.failures.join(" · "));
+      await redrawDetail(answer.photo);
+    });
+});
+
+$("outing-keep").addEventListener("click", () => {
+  storageAction(`/api/library/sessions/${state.detail.session_id}/keep-on-mac`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keep: true }),
+  }, async (answer) => {
+    await openDetail(state.detail.id, { remember: false });
+    $("storage-note").textContent =
+      `All ${answer.photographs} photographs in this outing stay on this Mac.`;
+  });
+});
+
+$("outing-restore").addEventListener("click", () => {
+  storageAction(`/api/library/sessions/${state.detail.session_id}/restore`,
+    { method: "POST" }, async (answer) => {
+      if (answer.failures.length) fail(answer.failures.join(" · "));
+      await openDetail(state.detail.id, { remember: false });
+      $("storage-note").textContent =
+        `${answer.restored} photograph(s) brought back to this Mac.`;
+    });
+});
 
 function rate(value) {
   if (!state.detail || value === state.detail.rating) return;

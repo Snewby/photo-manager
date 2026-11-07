@@ -76,6 +76,7 @@
         <img class="card__image" alt="" loading="lazy" decoding="async">
         <span class="card__rating" hidden></span>
         <span class="card__raw" hidden>RAW</span>
+        <span class="card__drive" hidden title="Only on the archive drive">drive only</span>
       </span>
     </button>
     <figcaption class="card__caption">
@@ -163,6 +164,28 @@
         Not grouped into an outing yet, so it has no event.
         <a href="/tag">Group its day</a> to give it one.
       </p>
+
+      <!-- Where its files are kept, and whether Free up Mac space may take
+           them. Shown only when there is an archive drive. -->
+      <section id="storage" class="fields" hidden>
+        <p class="tag__hint detail__scope">Where it is kept</p>
+        <label class="field">
+          <span class="field__label">On this Mac</span>
+          <select id="keep-on-mac" class="field__input">
+            <option value="rule">Follow the rule</option>
+            <option value="keep">Always keep on this Mac</option>
+            <option value="remove">Remove at the next free-up</option>
+          </select>
+        </label>
+        <div class="fields__actions">
+          <button id="restore" type="button" class="button" hidden>Bring back to Mac</button>
+          <button id="outing-keep" type="button" class="button button--quiet" hidden>
+            Keep the whole outing on this Mac</button>
+          <button id="outing-restore" type="button" class="button button--quiet" hidden>
+            Bring the whole outing back</button>
+        </div>
+        <span id="storage-note" class="tag__hint"></span>
+      </section>
 
       <dl id="facts" class="facts"></dl>
     </aside>

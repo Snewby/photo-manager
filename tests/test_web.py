@@ -1558,7 +1558,7 @@ def test_a_tile_carries_what_a_tile_draws_and_nothing_else(library: TestClient) 
 
     assert set(tile) == {
         "id", "name", "captured_at", "captured_at_inferred",
-        "rating", "has_raw", "location",
+        "rating", "has_raw", "location", "on_mac",
     }
 
 
@@ -1851,6 +1851,8 @@ def test_the_detail_view_carries_everything_the_catalog_knows(
         "session_id", "session_location", "session_photographs", "event",
         # the other store (D-1), and where this sits in the filter
         "sidecar", "neighbours", "params",
+        # where its files are: this Mac, the archive drive
+        "archive", "archived_at", "on_mac", "keep_on_mac",
     }
     assert body["camera_model"] == fixtures.CAMERA_MODEL
     assert body["bytes"] == fixtures.JPEG_WITHOUT_RAW.stat().st_size
@@ -2800,3 +2802,218 @@ def test_scripts_are_revalidated_so_an_update_is_seen_without_a_hard_reload(
         response = client.get("/static/strip.js")
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-cache"
+
+
+# ----------------------------------------------------------------------
+# The archive drive
+# ----------------------------------------------------------------------
+
+
+def _archive_settings(settings: Settings, backup_drive: Path) -> Settings:
+    settings = replace(settings, archive_root=backup_drive / "Photos")
+    seed(settings, content_hash=content_hash(fixtures.JPEG_WITHOUT_RAW),
+         library_path="2026/2026-01/DSCF1029.JPG", original_name="DSCF1029.JPG")
+    (settings.library_root / "2026" / "2026-01").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(fixtures.JPEG_WITHOUT_RAW,
+                 settings.library_root / "2026" / "2026-01" / "DSCF1029.JPG")
+    return settings
+
+
+def _wait_for_archive(client: TestClient) -> dict:
+    deadline = time.monotonic() + 30
+    while (payload := client.get("/api/archive").json())["progress"]["status"] == "running":
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    return payload
+
+
+def test_the_archive_button_copies_verifies_and_the_photo_says_so(
+    settings: Settings, backup_drive: Path
+) -> None:
+    settings = _archive_settings(settings, backup_drive)
+
+    with client_for(settings) as client:
+        before = client.get("/api/status").json()["archive"]
+        photo_id = grid(client)["photos"][0]["id"]
+        unarchived = client.get(f"/api/library/photos/{photo_id}").json()
+        client.post("/api/archive")
+        done = _wait_for_archive(client)
+        after = client.get("/api/status").json()["archive"]
+        archived = client.get(f"/api/library/photos/{photo_id}").json()
+
+    assert before["configured"] and before["attached"] and before["photos_not_archived"] == 1
+    assert done["progress"]["status"] == "done", done["progress"]["error"]
+    assert done["progress"]["result"]["copied"] == 1
+    assert after["photos_not_archived"] == 0 and after["last_verified"] is not None
+    assert (backup_drive / "Photos" / "2026" / "2026-01" / "DSCF1029.JPG").read_bytes() \
+        == fixtures.JPEG_WITHOUT_RAW.read_bytes()
+    assert unarchived["archive"] is True and unarchived["archived_at"] is None
+    assert archived["archived_at"] is not None and archived["on_mac"] is True
+
+
+def test_with_no_archive_the_photo_says_nothing_about_one(settings: Settings) -> None:
+    seed(settings, content_hash="a" * 64, library_path="2026/2026-01/a.jpg")
+    with client_for(settings) as client:
+        photo_id = grid(client)["photos"][0]["id"]
+        detail = client.get(f"/api/library/photos/{photo_id}").json()
+        status = client.get("/api/status").json()["archive"]
+        refused = client.post("/api/archive")
+    assert detail["archive"] is False and detail["archived_at"] is None
+    assert status["configured"] is False
+    assert refused.status_code == 409 and refused.json()["error"] == "archive-refused"
+
+
+def test_a_card_is_safe_to_format_once_its_keepers_are_on_the_archive_drive(
+    settings: Settings, card: Path, backup_drive: Path
+) -> None:
+    settings = _archive_settings(settings, backup_drive)
+    put(card, "DSCF1029.JPG", fixtures.JPEG_WITHOUT_RAW)
+
+    with client_for(settings) as client:
+        scan_id = client.get("/api/card").json()["scan_id"]
+        client.post(f"/api/card/{scan_id}/confirm")
+        _wait_for_confirm(client, scan_id)
+        before = client.get("/api/card").json()
+        client.post("/api/archive")
+        _wait_for_archive(client)
+        after = client.get("/api/card").json()
+
+    [frame_before], [frame_after] = before["photos"], after["photos"]
+    assert frame_before["stage"] == "in-library"
+    assert before["lifecycle"]["archive"] is True
+    assert before["lifecycle"]["reasons"] == ["1 on the Mac but not yet on the archive drive"]
+    assert frame_after["stage"] == "backed-up" and frame_after["backed_up"] is True
+    assert after["lifecycle"]["safe_to_format"] is True
+
+
+def test_an_archive_never_runs_beside_an_import_or_a_backup(
+    settings: Settings, card: Path, backup_drive: Path
+) -> None:
+    settings = _archive_settings(replace(settings, backup_root=backup_drive / "PMB"), backup_drive)
+    state = AppState(settings)
+    with TestClient(create_app(settings, state=state)) as client:
+        put(card, "DSCF0001.JPG", fixtures.BURST_SECOND)
+        scan_id = client.get("/api/card").json()["scan_id"]
+
+        state._backup.status = web_state.ImportStatus.RUNNING
+        while_backing_up = client.post("/api/archive")
+        state._backup.status = web_state.ImportStatus.IDLE
+
+        state._archive.status = web_state.ImportStatus.RUNNING
+        importing = client.post(f"/api/card/{scan_id}/import")
+        backing_up = client.post("/api/backup")
+        busy = client.get("/api/busy").json()
+        state._archive.status = web_state.ImportStatus.IDLE
+
+    assert while_backing_up.status_code == 409 and while_backing_up.json()["error"] == "busy"
+    assert importing.status_code == 409 and importing.json()["error"] == "busy"
+    assert backing_up.status_code == 409 and backing_up.json()["error"] == "busy"
+    assert busy == {"busy": ["an archive to the drive"]}
+
+
+def test_a_photograph_removed_from_the_mac_is_still_shown_from_the_cache(
+    settings: Settings, backup_drive: Path
+) -> None:
+    settings = _archive_settings(settings, backup_drive)
+    with client_for(settings) as client:
+        photo_id = grid(client)["photos"][0]["id"]
+        first = client.get(f"/api/library/photos/{photo_id}/thumbnail")  # warms the cache
+        client.post("/api/archive")
+        _wait_for_archive(client)
+
+        with Catalog.open(settings) as catalog:
+            photo = catalog.photos.get(photo_id)
+            catalog.photos.update(replace(photo, on_mac=False))
+        (settings.library_root / "2026" / "2026-01" / "DSCF1029.JPG").unlink()
+
+        cached = client.get(f"/api/library/photos/{photo_id}/thumbnail")
+        detail = client.get(f"/api/library/photos/{photo_id}").json()
+        # Never shown at this size, and the drive taken away: said plainly.
+        unplugged = replace(settings, archive_root=backup_drive / "Gone" / "Photos")
+    with client_for(unplugged) as client:
+        preview = client.get(f"/api/library/photos/{photo_id}/preview")
+
+    assert first.status_code == 200 and first.headers["X-Thumbnail-Cache"] == "miss"
+    assert cached.status_code == 200 and cached.headers["X-Thumbnail-Cache"] == "hit"
+    assert detail["on_mac"] is False and detail["archived_at"] is not None
+    assert detail["bytes"] == fixtures.JPEG_WITHOUT_RAW.stat().st_size  # read off the drive
+    assert preview.status_code == 404
+    assert "only on the archive drive" in preview.json()["detail"]
+
+
+def test_free_up_mac_space_follows_the_rule_and_bring_back_reverses_it(
+    settings: Settings, backup_drive: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import send2trash
+    trashed: list[str] = []
+
+    def fake_trash(path: str) -> None:
+        Path(path).unlink()
+        trashed.append(Path(path).name)
+
+    monkeypatch.setattr(send2trash, "send2trash", fake_trash)
+    settings = _archive_settings(settings, backup_drive)
+    mac_copy = settings.library_root / "2026" / "2026-01" / "DSCF1029.JPG"
+
+    with client_for(settings) as client:
+        photo_id = grid(client)["photos"][0]["id"]
+        before = client.get("/api/library/offload").json()
+        client.post("/api/archive")
+        _wait_for_archive(client)
+        archived_plan = client.get("/api/library/offload").json()["plan"]
+
+        marked = client.put(f"/api/library/photos/{photo_id}/keep-on-mac", json={"keep": False})
+        client.post("/api/library/offload")
+        deadline = time.monotonic() + 30
+        while (done := client.get("/api/library/offload").json())["progress"]["status"] == "running":
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        removed = client.get(f"/api/library/photos/{photo_id}").json()
+        strip = client.get("/api/status").json()["archive"]
+        gone_from_mac = not mac_copy.exists()
+
+        restored = client.post(f"/api/library/photos/{photo_id}/restore").json()
+
+    assert before["configured"] is True and before["plan"]["not_archived"] == 1
+    assert before["plan"]["photographs"] == 0  # not archived, so never a candidate
+    assert archived_plan["photographs"] == 1
+    assert marked.json()["keep_on_mac"] is False
+    assert done["progress"]["status"] == "done", done["progress"]["error"]
+    assert done["progress"]["result"]["removed"] == 1
+    assert trashed == ["DSCF1029.JPG"] and gone_from_mac
+    assert removed["on_mac"] is False and strip["only_on_drive"] == 1
+    assert restored["restored"] == 1 and restored["photo"]["on_mac"] is True
+    assert restored["photo"]["keep_on_mac"] is True
+    assert mac_copy.read_bytes() == fixtures.JPEG_WITHOUT_RAW.read_bytes()
+
+
+def test_free_up_needs_the_archive_drive(settings: Settings) -> None:
+    with client_for(settings) as client:
+        response = client.post("/api/library/offload")
+    assert response.status_code == 409 and response.json()["error"] == "offload-refused"
+
+
+def test_the_where_facet_partitions_the_library_and_filters_by_it(
+    settings: Settings, backup_drive: Path
+) -> None:
+    settings = _archive_settings(settings, backup_drive)
+    seed(settings, content_hash="b" * 64, library_path="2026/2026-01/b.jpg")
+    with client_for(settings) as client:
+        before = {v["value"]: v["count"] for v in grid(client)["facets"]["storage"]}
+        client.post("/api/archive")
+        _wait_for_archive(client)
+        after = {v["value"]: v["count"] for v in grid(client)["facets"]["storage"]}
+        filtered = client.get("/api/library/photos?storage=both").json()
+        bad = client.get("/api/library/photos?storage=somewhere")
+
+    # b.jpg has a row and no file, so it can never be archived.
+    assert before == {"mac-only": 2}
+    assert after == {"mac-only": 1, "both": 1}
+    assert [p["name"] for p in filtered["photos"]] == ["DSCF1029.JPG"]
+    assert bad.status_code == 422
+
+
+def test_without_an_archive_there_is_no_where_facet(settings: Settings) -> None:
+    seed(settings, content_hash="a" * 64, library_path="2026/2026-01/a.jpg")
+    with client_for(settings) as client:
+        assert grid(client)["facets"]["storage"] == []

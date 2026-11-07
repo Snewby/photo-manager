@@ -28,6 +28,20 @@ card_folder_glob = '1??_FUJI'
 # backup_root = 'E:\PhotoManagerBackup'
 # backup_root = '/Volumes/Backup/PhotoManagerBackup'
 
+# The archive drive: a plain mirror of the library, at the same paths, on a
+# DIFFERENT physical drive. Set it and the Mac holds a working set while the
+# drive holds every photograph — the page's button becomes "Archive now", and
+# a photograph verified on the drive can be removed from the Mac to free space.
+# The dated snapshots in backup_root then keep only the app's own state.
+# Commented out, the Mac keeps every photograph, as before.
+# archive_root = '/Volumes/My Passport/Photos'
+
+# What "Free up Mac space" leaves on the Mac: anything taken in the last
+# keep_on_mac_days days, and anything rated keep_on_mac_min_rating or more.
+# A photograph pinned with "Keep on Mac" stays regardless.
+# keep_on_mac_days = 90
+# keep_on_mac_min_rating = 4
+
 # Derived state — the SQLite catalog and the thumbnail cache. Both are
 # regenerable, so they live outside the library by default.
 # state_dir = 'C:\path\to\photo-manager\state'

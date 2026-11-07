@@ -48,6 +48,7 @@ import datetime as dt
 import hashlib
 import os
 import shutil
+import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -238,7 +239,8 @@ def plan_import(
             continue
         read.append(_Described(index, photo, captured_at, inferred, metadata))
 
-    planned = _assign_targets(read, decisions, root, location_slug)
+    planned = _assign_targets(read, decisions, root, location_slug,
+                              taken=_catalogued_paths(settings))
 
     return ImportPlan(
         library_root=root,
@@ -279,11 +281,31 @@ def _describe(photo: CardPhoto) -> tuple[dt.datetime, bool, PhotoMetadata]:
     return captured_at, source == DateSource.MTIME, primary
 
 
+def _catalogued_paths(settings: Settings) -> set[str]:
+    """Every path the catalog already gives a photograph, casefolded.
+
+    A name is not free just because the Mac has no file there: once *Free up
+    Mac space* has run, a photograph can own a path whose only copy is on the
+    archive drive. Handing that path to a new frame would put two different
+    photographs at one path, and the archive never overwrites a photograph.
+    """
+    assert settings.database_path is not None  # filled in by Settings
+    if not settings.database_path.exists():
+        return set()
+    with Catalog.open(settings) as catalog:
+        rows = catalog.connection.execute("SELECT library_path, raw_path FROM photo")
+        return {
+            path.casefold() for row in rows for path in (row[0], row[1]) if path is not None
+        }
+
+
 def _assign_targets(
     read: Sequence[_Described],
     decisions: Mapping[int, Decision],
     root: Path,
     location_slug: str | None,
+    *,
+    taken: set[str] | None = None,
 ) -> list[PlannedImport]:
     """Name everything, resolving collisions deterministically (FR-6.5).
 
@@ -293,7 +315,7 @@ def _assign_targets(
     stop being pairable (FR-1.2).
     """
     ordered = sorted(read, key=lambda entry: (entry.captured_at, entry.photo.primary.name.casefold()))
-    claimed: set[str] = set()
+    claimed: set[str] = set(taken or ())
     planned: list[PlannedImport] = []
 
     for entry in ordered:
@@ -413,7 +435,7 @@ def execute_import(
             progress(position, len(plan.photos), planned)
         try:
             result = _import_one(planned, root, catalog, imported_at)
-        except (ImportFailed, SidecarError, OSError) as exc:
+        except (ImportFailed, SidecarError, OSError, sqlite3.IntegrityError) as exc:
             # FR-1.3c: one frame that will not copy is one frame, not a card.
             failed.append(Failed(planned, f"{type(exc).__name__}: {exc}"))
             continue

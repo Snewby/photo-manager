@@ -54,7 +54,7 @@ import sqlite3
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 
-from .catalog import Catalog, PhotoRepository
+from .catalog import ARCHIVED, Catalog, PhotoRepository
 from .models import Photo
 
 __all__ = [
@@ -91,6 +91,23 @@ DIMENSIONS: tuple[str, ...] = (
     "rating",
     "year",
     "raw",
+    "storage",
+)
+
+#: Where a photograph's files are, as three values that never overlap: only
+#: on this Mac (not yet on the archive drive), on both, or only on the drive
+#: (*Free up Mac space* has let the Mac's copy go).
+STORAGE: tuple[str, ...] = ("mac-only", "both", "drive-only")
+
+_STORAGE_LABELS = {
+    "mac-only": "Only on this Mac",
+    "both": "On this Mac and the drive",
+    "drive-only": "Only on the archive drive",
+}
+
+_STORAGE = (
+    f"CASE WHEN p.on_mac = 0 THEN 'drive-only' WHEN {ARCHIVED} THEN 'both' "
+    "ELSE 'mac-only' END"
 )
 
 #: FR-3.4's precedence, as SQL. A photograph's location is its own override if
@@ -177,7 +194,15 @@ class Query:
     #: a filter somebody has to assemble from four parts is not first-class.
     untagged: bool | None = None
 
+    #: One of :data:`STORAGE`: where the files are — the Mac, the archive
+    #: drive, or both.
+    storage: str | None = None
+
     def __post_init__(self) -> None:
+        if self.storage is not None and self.storage not in STORAGE:
+            raise QueryError(
+                f"storage must be one of {', '.join(STORAGE)}, got {self.storage!r}"
+            )
         if self.rating_min is not None and not 0 <= self.rating_min <= 5:
             raise QueryError(f"rating_min must be 0-5, got {self.rating_min}")
         if self.since is not None and self.until is not None and self.since > self.until:
@@ -216,6 +241,8 @@ class Query:
             case "year":
                 year = int(value)  # type: ignore[call-overload]
                 return replace(self, since=dt.date(year, 1, 1), until=dt.date(year, 12, 31))
+            case "storage":
+                return replace(self, storage=str(value))
             case _:  # "raw"
                 return replace(self, has_raw=bool(value))
 
@@ -248,6 +275,8 @@ class Query:
                 year = int(value)  # type: ignore[call-overload]
                 return (self.since == dt.date(year, 1, 1)
                         and self.until == dt.date(year, 12, 31))
+            case "storage":
+                return self.storage == value
             case _:  # "raw"
                 return self.has_raw is not None and bool(self.has_raw) == bool(value)
 
@@ -276,6 +305,8 @@ class Query:
                 return replace(self, rating_min=None)
             case "year":
                 return replace(self, since=None, until=None)
+            case "storage":
+                return replace(self, storage=None)
             case _:  # "raw"
                 return replace(self, has_raw=None)
 
@@ -422,6 +453,7 @@ class Facets:
     years: tuple[FacetValue, ...] = ()
     raw: tuple[FacetValue, ...] = ()
     triage: tuple[FacetValue, ...] = ()
+    storage: tuple[FacetValue, ...] = ()
 
     _BY_DIMENSION = {
         "triage": "triage",
@@ -432,6 +464,7 @@ class Facets:
         "rating": "ratings",
         "year": "years",
         "raw": "raw",
+        "storage": "storage",
     }
 
     def of(self, dimension: str) -> tuple[FacetValue, ...]:
@@ -490,6 +523,9 @@ def _clauses(query: Query) -> dict[str, tuple[str, list[object]]]:
 
     if query.untagged is not None:
         clauses["triage"] = (_UNTAGGED if query.untagged else f"NOT {_UNTAGGED}", [])
+
+    if query.storage is not None:
+        clauses["storage"] = (f"({_STORAGE}) = ?", [query.storage])
 
     return clauses
 
@@ -805,6 +841,7 @@ def facets(catalog: Catalog, query: Query = Query()) -> Facets:
         "rating": _rating_facets(catalog, query),
         "year": _year_facets(catalog, query),
         "raw": _raw_facets(catalog, query),
+        "storage": _storage_facets(catalog, query),
     }
     kept = {
         dimension: _keep_selected(catalog, query, dimension, values)
@@ -819,6 +856,7 @@ def facets(catalog: Catalog, query: Query = Query()) -> Facets:
         ratings=kept["rating"],
         years=kept["year"],
         raw=kept["raw"],
+        storage=kept["storage"],
     )
 
 
@@ -879,6 +917,8 @@ def _selected_values(query: Query, dimension: str) -> tuple[object, ...]:
         case "year":
             year = query.since.year if query.since is not None else None
             return (year,) if year is not None and query.selects("year", year) else ()
+        case "storage":
+            return () if query.storage is None else (query.storage,)
         case _:  # "raw"
             return () if query.has_raw is None else (query.has_raw,)
 
@@ -907,6 +947,8 @@ def _label_for(catalog: Catalog, dimension: str, value: object) -> str:
             return "5 stars" if value == 5 else f"{value}+ stars"
         case "year":
             return str(value)
+        case "storage":
+            return _STORAGE_LABELS.get(str(value), str(value))
         case _:  # "raw"
             return "RAW kept" if value else "JPEG only"
 
@@ -1118,6 +1160,32 @@ def _triage_facets(catalog: Catalog, query: Query) -> tuple[FacetValue, ...]:
         )
         for flag in (True, False)
         if by_flag.get(flag)
+    )
+
+
+def _storage_facets(catalog: Catalog, query: Query) -> tuple[FacetValue, ...]:
+    """Where the files are — offered only once there is an archive drive,
+    because without one every photograph is on the Mac and the row would
+    say nothing."""
+    if catalog.settings.archive_root is None and query.storage is None:
+        return ()
+    where, parameters = _where(query, without=["storage"])
+    rows = _rows(
+        catalog,
+        f'SELECT {_STORAGE} AS storage, count(*) AS n {_from(query, without=["storage"])} '
+        f"{where} GROUP BY storage",
+        parameters,
+    )
+    by_value = {row["storage"]: int(row["n"]) for row in rows}
+    return tuple(
+        FacetValue(
+            value=value,
+            label=_STORAGE_LABELS[value],
+            count=by_value[value],
+            query=query.selecting("storage", value),
+        )
+        for value in STORAGE
+        if by_value.get(value)
     )
 
 

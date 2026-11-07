@@ -113,6 +113,8 @@ src/photo_manager/     application code
   cards.py             finds the card and reads it — never writes to it
   culling.py           keep/skip decisions, where they persist, what they'll cost
   importing.py         copies keepers into the library, verified byte for byte
+  archive.py           mirrors the library onto the archive drive, verified, add-only
+  offload.py           frees up Mac space for what the archive holds, and brings it back
   sidecars.py          XMP sidecars — the half of D-1 that outlives this app
   sessions.py          groups photographs into outings — suggests, never applies
   vocabulary.py        locations, people and tags: autocomplete, slugs, use counts
@@ -140,9 +142,59 @@ tools/
 private/               git-ignored: the owner's own documents, overrides and tests
 ```
 
+## The archive drive, and freeing up Mac space
+
+The Mac does not have to hold every photograph. Set `archive_root` in `config.toml`
+to a folder on another drive — `'/Volumes/My Passport/Photos'` — and the Mac becomes
+a **working set** while that drive holds **everything**.
+
+**Archive now** (the button under every page's header, in place of *Back up now*)
+copies whatever the drive is missing to the **same path** it has under
+`library_root`: a plain mirror that Finder, Lightroom or digiKam can open with no
+help from this app. Every file is written as `.partial`, read back and hashed, and
+only then renamed and recorded as verified. It only ever adds and updates: a
+photograph is never overwritten on the drive and nothing is ever deleted from it;
+only `.xmp` sidecars are updated, because tags change. Photographs already in a
+dated snapshot on the same drive are hard-linked rather than copied again. The
+app's own state — catalog, cull decisions, config — is still snapshotted to
+`backup_root` afterwards, without the photographs.
+
+Every photograph then says where it is: *On this Mac* and *On the archive drive,
+verified 7 Nov*. The Library's **Where** filter splits the library into *Only on
+this Mac*, *On this Mac and the drive* and *Only on the archive drive*. The card
+page's *backed up* means *on the archive drive*, and a card is safe to format once
+every kept frame is.
+
+**Free up Mac space** moves photographs that are verified on the drive off the Mac,
+to the **Trash**. What stays is a rule:
+
+```toml
+keep_on_mac_days = 90        # anything taken in the last 90 days
+keep_on_mac_min_rating = 4   # anything rated 4★ or more
+```
+
+and any photograph set to *Always keep on this Mac* in its detail view. *Remove at
+the next free-up* marks one to go regardless. Right before each photograph leaves,
+every one of its files is hashed on both sides; a sidecar whose tags have changed
+is archived again first, and anything that does not match stays on the Mac.
+**Bring back to Mac** copies a photograph (or a whole outing) back, verified, and
+pins it there.
+
+**A photograph removed from the Mac has one copy: the one on the drive.** The strip
+says how many there are, every time. Add a second drive or another copy of the
+archive if that matters to you.
+
+With the drive unplugged, the whole library can still be browsed and filtered,
+and any photograph already looked at still shows from the thumbnail cache. Tagging
+a photograph that is only on the drive needs the drive, because its `.xmp` lives
+beside it there — the page says so and changes nothing. `rebuild_catalog.py` reads
+the drive as well as the Mac, and refuses to run without the drive when photographs
+are only on it.
+
 ## Backing up the library
 
-Set `backup_root` in `config.toml` to a folder on another drive, and every page has a
+Without an archive drive, this is how the library is backed up. Set `backup_root`
+in `config.toml` to a folder on another drive, and every page has a
 **Back up now** button under its header. Beside it: when the last backup was, and how
 many photographs and tag files have changed since — so "is this backed up?" is
 answered without being asked. The page never sends a path; where a backup goes is

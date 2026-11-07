@@ -845,6 +845,21 @@ body {
   border: 1px solid var(--line);
 }
 
+/* A photograph whose only copy is on the archive drive. Top left, so it is
+ * never mistaken for the RAW marker opposite. */
+.card__drive {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  background: rgba(16, 18, 21, 0.86);
+  color: var(--accent);
+  border: 1px solid var(--line);
+}
+
 .card__caption {
   display: flex;
   gap: 8px;

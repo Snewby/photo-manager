@@ -54,7 +54,7 @@ import datetime as dt
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import db
@@ -170,18 +170,21 @@ def rebuild(
         raise RebuildError(f"{destination} already exists; rebuild into a fresh path.")
 
     started = time.perf_counter()
-    groups, unreadable_paths = _scan(root)
+    archive_root = _archive_root(settings)
+    groups, unreadable_paths = _scan_both(root, archive_root)
 
     read: list[_Read] = []
     unreadable = list(unreadable_paths)
     total = len(groups)
-    for index, (_, paths) in enumerate(sorted(groups.items()), start=1):
+    for index, (_, (group_root, paths)) in enumerate(sorted(groups.items()), start=1):
         if progress is not None:
             progress(index, total, paths[0])
         try:
-            read.append(_read_group(paths, root))
+            item = _read_group(paths, group_root)
         except (MetadataError, OSError) as exc:
             unreadable.extend(Unreadable(path, str(exc)) for path in paths)
+            continue
+        read.append(item if group_root == root else replace(item, on_mac=False))
 
     read.sort(key=lambda item: (item.captured_at, item.library_path))
     read, duplicates = _drop_duplicates(read)
@@ -192,6 +195,8 @@ def rebuild(
             rows = [_write_photo(catalog, item) for item in read]
             sessions = _sessions(catalog, read, rows)
             _vocabulary(catalog, read, rows)
+            if archive_root is not None:
+                _archive_records(catalog, read, archive_root)
 
     return Rebuilt(
         database_path=destination,
@@ -209,6 +214,87 @@ def rebuild(
         duplicates=tuple(duplicates),
         notes=_notes(read, duplicates),
     )
+
+
+def _archive_root(settings: Settings) -> Path | None:
+    """The archive drive, when one is configured and attached.
+
+    Refuses when it is configured, not attached, and the current catalog says
+    some photographs are only on it: a rebuild then would be missing them,
+    and the comparison would rightly refuse to adopt it anyway — better said
+    plainly before an hour of hashing than after.
+    """
+    from . import archive  # here, because archive imports the catalog layer
+
+    if settings.archive_root is None:
+        return None
+    try:
+        return archive.check_archive(settings)
+    except archive.ArchiveError as exc:
+        reason = str(exc)
+    database = settings.database_path
+    if database is not None and Path(database).exists():
+        with Catalog.open(settings, verify_root=False) as current:
+            away = current.connection.execute(
+                "SELECT count(*) FROM photo WHERE on_mac = 0"
+            ).fetchone()[0]
+        if away:
+            raise RebuildError(
+                f"{away} photograph(s) are only on the archive drive, so a rebuild "
+                f"without it would lose them. Plug it in first. ({reason})"
+            )
+    return None
+
+
+def _scan_both(
+    root: Path, archive_root: Path | None
+) -> tuple[dict[tuple[str, str], tuple[Path, list[Path]]], list[Unreadable]]:
+    """Every photograph on the Mac, plus every one only on the archive drive.
+
+    Keyed by the folder *relative to its root* and the stem, so the Mac and
+    the drive — a mirror at the same paths — describe one photograph with one
+    key. Where both have it, the Mac's copy is read: it is the faster disk,
+    and the archive run has already checked that the two are the same bytes.
+    """
+    groups: dict[tuple[str, str], tuple[Path, list[Path]]] = {}
+    mac, unreadable = _scan(root)
+    for (folder, stem), paths in mac.items():
+        groups[(Path(folder).relative_to(root).as_posix(), stem)] = (root, paths)
+    if archive_root is None:
+        return groups, unreadable
+
+    drive, drive_unreadable = _scan(archive_root)
+    for (folder, stem), paths in drive.items():
+        key = (Path(folder).relative_to(archive_root).as_posix(), stem)
+        groups.setdefault(key, (archive_root, paths))
+    # Something odd on the drive is worth reporting once, not once per copy.
+    unreadable.extend(
+        entry for entry in drive_unreadable
+        if not (root / entry.path.relative_to(archive_root)).exists()
+    )
+    return groups, unreadable
+
+
+def _archive_records(catalog: Catalog, read: Sequence[_Read], archive_root: Path) -> None:
+    """Note as archived the photographs that were read from the drive.
+
+    Their bytes were just hashed off the drive, so the record is earned. A
+    photograph read from the Mac gets none here: whether the drive's copy
+    matches is the next *Archive now*'s question, and it answers it without
+    copying anything.
+    """
+    now = dt.datetime.now()
+    for item in read:
+        if item.on_mac:
+            continue
+        catalog.archive.record(item.library_path, item.content_hash,
+                               (archive_root / item.library_path).stat().st_size, now)
+        extras = [item.raw_path] if item.raw_path else []
+        extras += [sidecar_path(p).as_posix() for p in (item.library_path, item.raw_path) if p]
+        for relative in extras:
+            path = archive_root / relative
+            if path.is_file():
+                catalog.archive.record(relative, content_hash(path), path.stat().st_size, now)
 
 
 def _drop_duplicates(read: list[_Read]) -> tuple[list[_Read], list[Unreadable]]:
@@ -272,6 +358,9 @@ class _Read:
     sidecar: Sidecar
     had_sidecar: bool
     lone_raw: bool = False
+    #: False when this photograph was read from the archive drive because the
+    #: Mac no longer has it.
+    on_mac: bool = True
 
 
 def _scan(root: Path) -> tuple[dict[tuple[str, str], list[Path]], list[Unreadable]]:
@@ -290,6 +379,8 @@ def _scan(root: Path) -> tuple[dict[tuple[str, str], list[Path]], list[Unreadabl
             continue
         if path.suffix.lower() == ".xmp":
             continue  # read with its photograph, never on its own
+        if path.name.endswith(".partial"):
+            continue  # an unfinished copy, never a photograph in its own right
         kind = _file_kind(path)
         if kind is None:
             # Not silently skipped: something that is in the library and is not
@@ -446,6 +537,7 @@ def _write_photo(catalog: Catalog, item: _Read) -> Photo:
             focal_length=item.metadata.focal_length,
             orientation=item.metadata.orientation,
             rating=item.sidecar.rating,
+            on_mac=item.on_mac,
         )
     )
 
@@ -641,6 +733,11 @@ def _notes(read: Sequence[_Read], duplicates: Sequence[Unreadable] = ()) -> tupl
             f"{len(duplicates)} file(s) are byte-identical to another photograph and "
             f"have no row of their own: "
             + ", ".join(sorted(str(d.path) for d in duplicates))
+        )
+    away = [item for item in read if not item.on_mac]
+    if away:
+        notes.append(
+            f"{len(away)} photograph(s) are only on the archive drive and were read from it."
         )
     lone = [item for item in read if item.lone_raw]
     if lone:

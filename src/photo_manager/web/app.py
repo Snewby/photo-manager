@@ -41,6 +41,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -53,6 +54,9 @@ from pydantic import BaseModel, Field
 
 from .. import queries, tagging, vocabulary
 from .. import backup
+from .. import offload
+from ..archive import ArchiveError
+from ..offload import OffloadError
 from ..backup import BackupError
 from ..cards import CardError, CardLocation, CardPhoto, CardScan, Dedup
 from ..catalog import Catalog
@@ -170,6 +174,13 @@ class PhotoTagBody(BaseModel):
     rating: int | None = Field(default=None, ge=0, le=5)
 
 
+class KeepOnMacBody(BaseModel):
+    """True always keeps it on the Mac; False removes it at the next free-up;
+    None hands it back to the rule in config.toml."""
+
+    keep: bool | None = None
+
+
 class ImportBody(BaseModel):
     """What the browser may say about an import.
 
@@ -260,6 +271,14 @@ def create_app(
     @app.exception_handler(BackupError)
     def _backup_refused(_: Request, exc: BackupError) -> JSONResponse:
         return JSONResponse({"error": "backup-refused", "detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(ArchiveError)
+    def _archive_refused(_: Request, exc: ArchiveError) -> JSONResponse:
+        return JSONResponse({"error": "archive-refused", "detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(OffloadError)
+    def _offload_refused(_: Request, exc: OffloadError) -> JSONResponse:
+        return JSONResponse({"error": "offload-refused", "detail": str(exc)}, status_code=409)
 
     @app.exception_handler(NoSuchRowError)
     def _no_row(_: Request, exc: NoSuchRowError) -> JSONResponse:
@@ -463,6 +482,7 @@ def create_app(
         return _json({
             "card": _location_payload(app_state.card_location()),
             "backup": _backup_payload(app_state),
+            "archive": _archive_payload(app_state),
         })
 
     @app.get("/api/busy")
@@ -487,6 +507,17 @@ def create_app(
         app_state.start_backup()
         return _json(_backup_payload(app_state))
 
+    @app.get("/api/archive")
+    def archive_state() -> Response:
+        return _json(_archive_payload(app_state))
+
+    @app.post("/api/archive")
+    def archive_start() -> Response:
+        """Copy to ``archive_root`` whatever it is missing. Takes no path, for
+        the same reason as a backup: where the archive is, is configuration."""
+        app_state.start_archive()
+        return _json(_archive_payload(app_state))
+
     @app.get("/api/card/{scan_id}/cull")
     def card_cull(scan_id: str) -> Response:
         """The cull state on its own, small enough to re-fetch freely."""
@@ -501,6 +532,55 @@ def create_app(
     # (§4.1). An id is a primary key the server itself issued and looks up; a
     # request for one the catalog does not hold is a 404, and there is nothing
     # a crafted id can reach that is not already a row in this library.
+
+    @app.get("/api/library/offload")
+    def library_offload_plan() -> Response:
+        """What *Free up Mac space* would remove now, and why the rest stay."""
+        return _json(_offload_payload(app_state))
+
+    @app.post("/api/library/offload")
+    def library_offload_start() -> Response:
+        """Act on the rule. Takes nothing: what goes is the rule's answer at
+        the moment it runs, never a list a page sends."""
+        app_state.start_offload()
+        return _json(_offload_payload(app_state))
+
+    @app.put("/api/library/photos/{photo_id}/keep-on-mac")
+    def library_photo_keep(photo_id: int, body: KeepOnMacBody) -> Response:
+        with _library(settings) as catalog:
+            photo = _row(catalog, photo_id)
+            catalog.photos.update(replace(photo, keep_on_mac=body.keep))
+            return _json(_photo_detail(catalog, _row(catalog, photo_id)))
+
+    @app.put("/api/library/sessions/{session_id}/keep-on-mac")
+    def library_session_keep(session_id: int, body: KeepOnMacBody) -> Response:
+        with _library(settings) as catalog:
+            if catalog.sessions.get(session_id) is None:
+                raise NoSuchRowError(f"No session with id {session_id}")
+            photos = catalog.photos.in_session(session_id)
+            with catalog.transaction():
+                for photo in photos:
+                    catalog.photos.update(replace(photo, keep_on_mac=body.keep))
+            return _json({"photographs": len(photos), "keep": body.keep})
+
+    @app.post("/api/library/photos/{photo_id}/restore")
+    def library_photo_restore(photo_id: int) -> Response:
+        """Copy one photograph back from the archive drive, verified, and pin it."""
+        with _library(settings) as catalog:
+            _row(catalog, photo_id)
+            result = offload.restore_to_mac(settings, catalog, [photo_id])
+            return _json(_restore_payload(result)
+                         | {"photo": _photo_detail(catalog, _row(catalog, photo_id))})
+
+    @app.post("/api/library/sessions/{session_id}/restore")
+    def library_session_restore(session_id: int) -> Response:
+        with _library(settings) as catalog:
+            if catalog.sessions.get(session_id) is None:
+                raise NoSuchRowError(f"No session with id {session_id}")
+            result = offload.restore_to_mac(
+                settings, catalog, offload.photos_in(catalog, session_id)
+            )
+            return _json(_restore_payload(result))
 
     @app.get("/api/library/sessions")
     def library_sessions() -> Response:
@@ -860,6 +940,7 @@ def _filter(
     until: dt.date | None = None,
     raw: bool | None = None,
     untagged: bool | None = None,
+    storage: str | None = None,
 ) -> queries.Query:
     """FR-7.2's filter, read off a query string.
 
@@ -884,6 +965,7 @@ def _filter(
         until=until,
         has_raw=raw,
         untagged=untagged,
+        storage=storage,
     )
 
 
@@ -899,11 +981,23 @@ def _cached_image(
     the response says whether the cache had it, which is how the timings in
     NFR-1 are measurable from outside.
     """
-    path = catalog.absolute_path(photo)
-    if not path.is_file():
-        raise NoSuchRowError(f"{photo.library_path} is in the catalog but not on disk")
-    cached = cache.cached(photo.content_hash) is not None
-    blob = cache.ensure(path, photo.content_hash).read_bytes()
+    # The cache first, and the original only on a miss: a photograph that is
+    # only on the archive drive is still a tile and a preview with the drive
+    # in a drawer, as long as it has been looked at once.
+    hit = cache.cached(photo.content_hash)
+    if hit is not None:
+        blob = hit.read_bytes()
+    else:
+        path = catalog.locate(photo.library_path)
+        if path is None:
+            if not photo.on_mac:
+                raise NoSuchRowError(
+                    f"{photo.library_path} is only on the archive drive, which is not "
+                    "plugged in, and has not been shown here before."
+                )
+            raise NoSuchRowError(f"{photo.library_path} is in the catalog but not on disk")
+        blob = cache.ensure(path, photo.content_hash).read_bytes()
+    cached = hit is not None
     return Response(
         blob,
         media_type="image/jpeg",
@@ -959,6 +1053,8 @@ def _query_params(query: queries.Query) -> str:
         pairs.append(("raw", "true" if query.has_raw else "false"))
     if query.untagged is not None:
         pairs.append(("untagged", "true" if query.untagged else "false"))
+    if query.storage is not None:
+        pairs.append(("storage", query.storage))
     return urlencode(pairs)
 
 
@@ -999,6 +1095,8 @@ def _tile_payload(photo: Photo, places: dict[int, str]) -> dict[str, Any]:
         "rating": photo.rating,
         "has_raw": photo.has_raw,
         "location": places.get(photo.id),
+        # Read off the row already fetched, so it costs the tile nothing.
+        "on_mac": photo.on_mac,
     }
 
 
@@ -1235,11 +1333,14 @@ def _photo_detail(catalog: Catalog, photo: Photo) -> dict[str, Any]:
     """
     assert photo.id is not None
     session = None if photo.session_id is None else catalog.sessions.get(photo.session_id)
-    sidecar = sidecar_path(catalog.absolute_path(photo))
+    # Wherever the files are now — the Mac, or the archive drive for a
+    # photograph that has been removed from the Mac.
+    found = catalog.locate(photo.library_path)
+    sidecar = catalog.locate(sidecar_path(photo.library_path).as_posix())
     return _photo_summary(catalog, photo) | {
         "library_path": photo.library_path,
         "raw_path": photo.raw_path,
-        "bytes": _size_on_disk(catalog.absolute_path(photo)),
+        "bytes": None if found is None else _size_on_disk(found),
         "width": photo.width,
         "height": photo.height,
         "imported_at": photo.imported_at.isoformat(timespec="seconds"),
@@ -1258,7 +1359,28 @@ def _photo_detail(catalog: Catalog, photo: Photo) -> dict[str, Any]:
         "focal_length": photo.focal_length,
         # Whether D-1's other half actually exists for this photograph. A UI
         # that claimed "saved" without it would be claiming the wrong thing.
-        "sidecar": sidecar.name if sidecar.is_file() else None,
+        "sidecar": None if sidecar is None else sidecar.name,
+    } | _whereabouts(catalog, photo)
+
+
+def _whereabouts(catalog: Catalog, photo: Photo) -> dict[str, Any]:
+    """Where this photograph's files are: on the Mac, on the archive drive
+    (and since when, verified), and whether *Free up Mac space* may take it.
+
+    ``archived_at`` is the time the drive's copy was read back and matched,
+    or None — "not yet", or no archive drive at all (``archive`` False).
+    """
+    archived = catalog.archive.get(photo.library_path)
+    raw_archived = photo.raw_path is None or catalog.archive.get(photo.raw_path) is not None
+    verified = (
+        archived is not None and archived.sha256 == photo.content_hash and raw_archived
+    )
+    return {
+        "archive": catalog.settings.archive_root is not None,
+        "archived_at": archived.verified_at.isoformat(timespec="seconds")
+        if verified and archived is not None else None,
+        "on_mac": photo.on_mac,
+        "keep_on_mac": photo.keep_on_mac,
     }
 
 
@@ -1323,7 +1445,9 @@ def _session_payload(state: AppState, session: CardSession) -> dict[str, Any]:
         "bytes": {"jpeg": scan.jpeg_bytes, "total": scan.total_bytes},
         "confirm": _confirm_payload(session.confirm.snapshot()),
         "cull": _cull_payload(state, session),
-        "lifecycle": _lifecycle_payload(stages),
+        "lifecycle": _lifecycle_payload(
+            stages, archive=state.settings.archive_root is not None
+        ),
         "photos": [
             {**_photo_payload(session.scan_id, index, photo), **stages[index]}
             for index, photo in enumerate(scan.photos)
@@ -1358,8 +1482,15 @@ def _frame_stages(state: AppState, session: CardSession) -> list[dict[str, Any]]
     ``backed_up`` is None where it cannot be said — the frame is not in the
     library, or there is no backup to ask, or the drive did not answer — so
     a page never draws "unknown" as "no".
+
+    With an archive drive configured, "backed up" means **verified on the
+    archive drive**, which the catalog knows without the drive attached. The
+    dated snapshots no longer hold the photographs, so they cannot answer it.
     """
-    backed_up = state.backed_up_hashes()
+    if state.settings.archive_root is not None:
+        backed_up = state.archived_hashes()
+    else:
+        backed_up = state.backed_up_hashes()
     hashes = state.catalog_hashes()
     stages: list[dict[str, Any]] = []
     for index, photo in enumerate(session.scan.photos):
@@ -1382,7 +1513,9 @@ def _frame_stages(state: AppState, session: CardSession) -> list[dict[str, Any]]
     return stages
 
 
-def _lifecycle_payload(stages: list[dict[str, Any]]) -> dict[str, Any]:
+def _lifecycle_payload(
+    stages: list[dict[str, Any]], *, archive: bool = False
+) -> dict[str, Any]:
     """How many frames are at each stage, and whether the card can be
     formatted without losing anything that was not deliberately skipped."""
     counts = {stage: 0 for stage in Stage.ALL}
@@ -1392,13 +1525,18 @@ def _lifecycle_payload(stages: list[dict[str, Any]]) -> dict[str, Any]:
         Stage.UNDECIDED: "not decided yet",
         Stage.KEEP: "kept but not imported yet",
         Stage.LIKELY_IN_LIBRARY: "in the library by name only — confirm by hash",
-        Stage.IN_LIBRARY: "in the library but not confirmed in the last backup",
+        Stage.IN_LIBRARY: (
+            "on the Mac but not yet on the archive drive" if archive
+            else "in the library but not confirmed in the last backup"
+        ),
     }
     reasons = [f"{counts[stage]} {why}" for stage, why in blocking.items() if counts[stage]]
     return {
         "counts": counts,
         "safe_to_format": bool(stages) and not reasons,
         "reasons": reasons,
+        # Whether "backed up" on this page means the archive drive.
+        "archive": archive,
     }
 
 
@@ -1452,6 +1590,90 @@ def _backup_payload(state: AppState) -> dict[str, Any]:
                 "incremental_from": result.incremental_from,
             },
         },
+    }
+
+
+def _archive_payload(state: AppState) -> dict[str, Any]:
+    status = state.archive_status()
+    progress = state.archive_progress()
+    result = progress.result
+    return {
+        "configured": status.configured,
+        "attached": status.attached,
+        "message": status.message,
+        "volume": status.volume,
+        "free_bytes": status.free_bytes,
+        "last_verified": None if status.last_verified is None
+        else status.last_verified.isoformat(timespec="seconds"),
+        "photos": status.photos,
+        "photos_archived": status.photos_archived,
+        "photos_not_archived": status.photos_not_archived,
+        "only_on_drive": status.only_on_drive,
+        "sidecars_changed": status.sidecars_changed,
+        "free_up": _offload_payload(state) if status.configured else None,
+        "progress": {
+            "status": progress.status,
+            "done": progress.done,
+            "total": progress.total,
+            "current": progress.current,
+            "seconds": round(progress.seconds, 1),
+            "error": progress.error,
+            "result": None if result is None else {
+                "files": result.files,
+                "copied": result.copied,
+                "linked": result.linked,
+                "unchanged": result.unchanged,
+                "bytes_copied": result.bytes_copied,
+                "bytes_linked": result.bytes_linked,
+                "failures": len(result.failures),
+                "snapshot": None if result.snapshot is None else result.snapshot.name,
+            },
+        },
+    }
+
+
+def _offload_payload(state: AppState) -> dict[str, Any]:
+    plan = state.offload_plan()
+    progress = state.offload_progress()
+    result = progress.result
+    return {
+        "configured": plan is not None,
+        "rule": {
+            "days": state.settings.keep_on_mac_days,
+            "min_rating": state.settings.keep_on_mac_min_rating,
+        },
+        "plan": None if plan is None else {
+            "photographs": len(plan.candidates),
+            "bytes": plan.bytes,
+            "on_mac": plan.on_mac,
+            "mac_bytes": plan.mac_bytes,
+            "kept_pinned": plan.kept_pinned,
+            "kept_recent": plan.kept_recent,
+            "kept_rated": plan.kept_rated,
+            "not_archived": plan.not_archived,
+        },
+        "progress": {
+            "status": progress.status,
+            "done": progress.done,
+            "total": progress.total,
+            "current": progress.current,
+            "seconds": round(progress.seconds, 1),
+            "error": progress.error,
+            "result": None if result is None else {
+                "removed": result.removed,
+                "bytes_freed": result.bytes_freed,
+                "sidecars_refreshed": result.sidecars_refreshed,
+                "failures": len(result.failures),
+            },
+        },
+    }
+
+
+def _restore_payload(result: offload.RestoreResult) -> dict[str, Any]:
+    return {
+        "restored": result.restored,
+        "bytes_copied": result.bytes_copied,
+        "failures": result.failures,
     }
 
 
