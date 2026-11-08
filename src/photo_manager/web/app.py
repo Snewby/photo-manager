@@ -58,7 +58,7 @@ from .. import offload
 from ..archive import ArchiveError
 from ..offload import OffloadError
 from ..backup import BackupError
-from ..cards import CardError, CardLocation, CardPhoto, CardScan, Dedup
+from ..cards import CardError, CardLocation, CardPhoto, CardScan, CardStatus, Dedup
 from ..catalog import Catalog
 from ..config import Settings
 from ..culling import Decision, Resume, Tally, Verdict
@@ -753,8 +753,16 @@ def create_app(
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-    @app.get("/")
-    def index() -> FileResponse:
+    @app.get("/", response_model=None)
+    def index() -> FileResponse | RedirectResponse:
+        """The card workflow while a card is in; otherwise the Library.
+
+        Only "nothing card-like is attached" goes to the Library. A configured
+        card path that is missing or empty is a problem to be told about, and
+        the card page is where its sentence is shown (FR-1.1a).
+        """
+        if app_state.card_location().status in _NO_CARD:
+            return RedirectResponse("/library", status_code=307)
         return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
 
     @app.get("/cull")
@@ -765,16 +773,18 @@ def create_app(
         return RedirectResponse(f"/?{urlencode(query)}", status_code=307)
 
     @app.get("/tag")
-    def tag_page() -> FileResponse:
-        return FileResponse(STATIC_DIR / "tag.html", media_type="text/html")
+    def tag_page() -> RedirectResponse:
+        """The Tag page is the Library's Outings view and its Edit outing panel."""
+        return RedirectResponse("/library?view=outings", status_code=307)
 
     @app.get("/library")
     def library_page() -> FileResponse:
         return FileResponse(STATIC_DIR / "library.html", media_type="text/html")
 
     @app.get("/triage")
-    def triage_page() -> FileResponse:
-        return FileResponse(STATIC_DIR / "triage.html", media_type="text/html")
+    def triage_page() -> RedirectResponse:
+        """Triage is the Library's To tag view."""
+        return RedirectResponse("/library?view=totag", status_code=307)
 
     return app
 
@@ -1568,6 +1578,9 @@ def _lifecycle_payload(
         "archive": archive,
     }
 
+
+#: Card statuses that mean "no card at all", so / opens the Library instead.
+_NO_CARD = frozenset({CardStatus.NO_MEDIA, CardStatus.NO_PHOTOS_ON_MEDIA})
 
 #: The card workflow's steps, in the order a card goes through them.
 STEPS = ("review", "import", "archive", "tag", "format")

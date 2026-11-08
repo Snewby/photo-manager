@@ -1,4 +1,5 @@
-/* The tagging screen (WU-3.4).
+/* Outings, and Edit outing — the Library's third view (WU-3.4; it was the
+ * Tag page until the card workflow folded five screens into two).
  *
  * The shape of this page is FR-3.3 and FR-3.4 argued out in layout: the big
  * form on the right tags a whole outing in one action, and a single frame
@@ -17,6 +18,7 @@
  *   agreed" would be claiming the wrong half of D-1.
  */
 
+window.Outings = (() => {
 const $ = (id) => document.getElementById(id);
 
 const state = {
@@ -55,21 +57,18 @@ async function loadSessions() {
   state.sessions = data.sessions;
   state.ungrouped = data.ungrouped;
 
-  $("counts").textContent =
-    `${data.counts.photographs} photographs · ${data.counts.sessions} outings · ` +
-    `${data.counts.ungrouped} not grouped`;
 
   drawUngrouped();
   drawSessions();
 }
 
 function drawUngrouped() {
-  const list = $("ungrouped");
+  const list = $("o-ungrouped");
   list.textContent = "";
-  $("ungrouped-section").hidden = state.ungrouped.length === 0;
+  $("o-ungrouped-section").hidden = state.ungrouped.length === 0;
 
   for (const day of state.ungrouped) {
-    const node = $("day-template").content.cloneNode(true);
+    const node = $("o-day-template").content.cloneNode(true);
     node.querySelector(".day__date").textContent = day.day;
     node.querySelector(".day__count").textContent = `${day.photographs}`;
 
@@ -121,12 +120,12 @@ async function group(day, oneSession) {
 }
 
 function drawSessions() {
-  const list = $("sessions");
+  const list = $("o-sessions");
   list.textContent = "";
-  $("no-sessions").hidden = state.sessions.length > 0;
+  $("o-no-sessions").hidden = state.sessions.length > 0;
 
   for (const session of state.sessions) {
-    const node = $("day-template").content.cloneNode(true);
+    const node = $("o-day-template").content.cloneNode(true);
     node.querySelector(".day__date").textContent = session.day;
     node.querySelector(".day__count").textContent = `${session.photographs}`;
 
@@ -156,40 +155,42 @@ async function openSession(id) {
   }
   drawPanel();
   drawSessions();
+  // The outing on screen is in the URL, so it is a link like a photograph is.
+  history.replaceState(history.state, "", `/library?view=outings&outing=${id}`);
 }
 
 function drawPanel() {
   const session = state.current;
-  $("panel-empty").hidden = true;
-  $("panel").hidden = false;
+  $("o-panel-empty").hidden = true;
+  $("o-panel").hidden = false;
 
-  $("panel-title").textContent = session.day;
+  $("o-panel-title").textContent = session.day;
   const span = `${session.started_at.slice(11, 16)}–${(session.ended_at || "").slice(11, 16)}`;
   const overrides = session.overrides === 0 ? ""
     : session.overrides === 1 ? " · 1 frame with its own location"
     : ` · ${session.overrides} frames with their own location`;
-  $("panel-sub").textContent = `${session.photographs} photographs · ${span}${overrides}`;
+  $("o-panel-sub").textContent = `${session.photographs} photographs · ${span}${overrides}`;
 
-  $("f-location").value = session.location || "";
-  $("f-event").value = session.event || "";
-  $("f-people").value = session.people.join(", ");
-  $("f-tags").value = session.tags.join(", ");
+  $("o-location").value = session.location || "";
+  $("o-event").value = session.event || "";
+  $("o-people").value = session.people.join(", ");
+  $("o-tags").value = session.tags.join(", ");
   state.initial = {
-    location: $("f-location").value,
-    event: $("f-event").value,
-    people: $("f-people").value,
-    tags: $("f-tags").value,
+    location: $("o-location").value,
+    event: $("o-event").value,
+    people: $("o-people").value,
+    tags: $("o-tags").value,
   };
-  $("save-note").textContent = "";
+  $("o-save-note").textContent = "";
 
   drawFrames(session.photos);
 }
 
 function drawFrames(photos) {
-  const grid = $("photos");
+  const grid = $("o-photos");
   grid.textContent = "";
   for (const photo of photos) {
-    const node = $("frame-template").content.cloneNode(true);
+    const node = $("o-frame-template").content.cloneNode(true);
     const image = node.querySelector(".frame__image");
     image.src = `/api/library/photos/${photo.id}/thumbnail`;
     image.alt = photo.name;
@@ -215,10 +216,10 @@ function drawFrames(photos) {
 /* Only what changed. See the note at the top of this file. */
 function changedFields() {
   const now = {
-    location: $("f-location").value,
-    event: $("f-event").value,
-    people: $("f-people").value,
-    tags: $("f-tags").value,
+    location: $("o-location").value,
+    event: $("o-event").value,
+    people: $("o-people").value,
+    tags: $("o-tags").value,
   };
   const body = {};
   if (now.location !== state.initial.location) body.location = now.location;
@@ -232,15 +233,15 @@ function splitList(text) {
   return text.split(",").map((part) => part.trim()).filter(Boolean);
 }
 
-$("session-form").addEventListener("submit", async (event) => {
+$("o-session-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   clearError();
   const body = changedFields();
   if (Object.keys(body).length === 0) {
-    $("save-note").textContent = "Nothing changed.";
+    $("o-save-note").textContent = "Nothing changed.";
     return;
   }
-  $("save-note").textContent = "Saving…";
+  $("o-save-note").textContent = "Saving…";
   try {
     const result = await api(`/api/library/sessions/${state.current.id}/tags`, {
       method: "PUT",
@@ -249,11 +250,11 @@ $("session-form").addEventListener("submit", async (event) => {
     });
     state.current = result;
     drawPanel();
-    $("save-note").textContent =
+    $("o-save-note").textContent =
       `Saved to ${result.photographs} photographs, in the catalog and beside them on disk.`;
     await loadSessions();
   } catch (exc) {
-    $("save-note").textContent = "";
+    $("o-save-note").textContent = "";
     fail(`Not saved — ${exc.message}`);
   }
 });
@@ -268,49 +269,49 @@ async function openSheet(photoId) {
     return fail(exc.message);
   }
   const photo = state.photo;
-  $("sheet-title").textContent = photo.name;
-  $("sheet-sub").textContent = [
+  $("o-sheet-title").textContent = photo.name;
+  $("o-sheet-sub").textContent = [
     photo.captured_at.replace("T", " "),
     photo.session_location ? `outing: ${photo.session_location}` : "outing has no location",
     photo.sidecar ? "has a sidecar" : "no sidecar yet",
   ].join(" · ");
 
-  $("p-location").value = photo.override || "";
-  $("p-people").value = photo.people.join(", ");
-  $("p-tags").value = photo.tags.join(", ");
-  $("p-rating").value = String(photo.rating);
-  $("sheet-note").textContent = "";
-  $("sheet").hidden = false;
+  $("o-p-location").value = photo.override || "";
+  $("o-p-people").value = photo.people.join(", ");
+  $("o-p-tags").value = photo.tags.join(", ");
+  $("o-p-rating").value = String(photo.rating);
+  $("o-sheet-note").textContent = "";
+  $("o-sheet").hidden = false;
 }
 
 function closeSheet() {
-  $("sheet").hidden = true;
+  $("o-sheet").hidden = true;
   state.photo = null;
 }
 
-$("sheet-close").onclick = closeSheet;
-$("sheet").addEventListener("click", (event) => {
-  if (event.target === $("sheet")) closeSheet();
+$("o-sheet-close").onclick = closeSheet;
+$("o-sheet").addEventListener("click", (event) => {
+  if (event.target === $("o-sheet")) closeSheet();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !$("sheet").hidden) closeSheet();
+  if (event.key === "Escape" && !$("o-sheet").hidden) closeSheet();
 });
 
-$("photo-form").addEventListener("submit", async (event) => {
+$("o-photo-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   clearError();
   const photo = state.photo;
   const body = {};
-  if ($("p-location").value !== (photo.override || "")) body.location = $("p-location").value;
-  if ($("p-people").value !== photo.people.join(", ")) body.people = splitList($("p-people").value);
-  if ($("p-tags").value !== photo.tags.join(", ")) body.tags = splitList($("p-tags").value);
-  if (Number($("p-rating").value) !== photo.rating) body.rating = Number($("p-rating").value);
+  if ($("o-p-location").value !== (photo.override || "")) body.location = $("o-p-location").value;
+  if ($("o-p-people").value !== photo.people.join(", ")) body.people = splitList($("o-p-people").value);
+  if ($("o-p-tags").value !== photo.tags.join(", ")) body.tags = splitList($("o-p-tags").value);
+  if (Number($("o-p-rating").value) !== photo.rating) body.rating = Number($("o-p-rating").value);
 
   if (Object.keys(body).length === 0) {
-    $("sheet-note").textContent = "Nothing changed.";
+    $("o-sheet-note").textContent = "Nothing changed.";
     return;
   }
-  $("sheet-note").textContent = "Saving…";
+  $("o-sheet-note").textContent = "Saving…";
   try {
     await api(`/api/library/photos/${photo.id}/tags`, {
       method: "PUT",
@@ -321,7 +322,7 @@ $("photo-form").addEventListener("submit", async (event) => {
     await openSession(state.current.id);
     await loadSessions();
   } catch (exc) {
-    $("sheet-note").textContent = "";
+    $("o-sheet-note").textContent = "";
     fail(`Not saved — ${exc.message}`);
   }
 });
@@ -355,16 +356,40 @@ function wire(input, kind, list) {
 }
 
 for (const [id, kind, list] of [
-  ["f-location", "locations", "loc-list"],
-  ["p-location", "locations", "loc-list"],
-  ["f-people", "people", "ppl-list"],
-  ["p-people", "people", "ppl-list"],
-  ["f-tags", "tags", "tag-list"],
-  ["p-tags", "tags", "tag-list"],
+  ["o-location", "locations", "loc-list"],
+  ["o-p-location", "locations", "loc-list"],
+  ["o-people", "people", "ppl-list"],
+  ["o-p-people", "people", "ppl-list"],
+  ["o-tags", "tags", "tag-list"],
+  ["o-p-tags", "tags", "tag-list"],
 ]) {
   wire($(id), kind, $(list));
 }
 
-/* ---------------------------------------------------------------- boot */
+/* ---------------------------------------------------------------- show */
 
-loadSessions().catch((exc) => fail(exc.message));
+/* Drawn when the view is opened, not before: the Library opens on Photos, and
+ * the outings list is a query nobody asked for until then. *outing* opens
+ * that outing's Edit outing panel; *day* brings that ungrouped day into view. */
+let loaded = false;
+
+async function show({ outing = null, day = null } = {}) {
+  try {
+    if (!loaded || outing === null) await loadSessions();
+    loaded = true;
+    if (outing !== null) await openSession(outing);
+    if (day) {
+      const row = [...document.querySelectorAll("#o-ungrouped .day__date")]
+        .find((node) => node.textContent === day);
+      if (row) {
+        row.closest(".day").classList.add("day--wanted");
+        row.scrollIntoView({ block: "center" });
+      }
+    }
+  } catch (exc) {
+    fail(exc.message);
+  }
+}
+
+return { show };
+})();

@@ -456,9 +456,10 @@ def only_session(client: TestClient) -> dict:
 
 
 def test_the_tag_page_is_served(tagged_client: TestClient) -> None:
+    """It is the Library's Outings view now, and /tag still leads there."""
     response = tagged_client.get("/tag")
     assert response.status_code == 200
-    assert 'id="session-form"' in response.text
+    assert 'id="o-session-form"' in response.text
 
 
 def test_sessions_and_the_backlog_arrive_together(settings: Settings) -> None:
@@ -706,7 +707,7 @@ def test_the_page_sends_only_the_fields_that_changed() -> None:
     The guard itself, not a mention of it: the comparison against what the form
     was drawn with is what makes the body partial.
     """
-    script = frontend("tag.js")
+    script = frontend("outings.js")
     assert "state.initial" in script
     assert "!== state.initial.location" in script
     assert "!== state.initial.people" in script
@@ -715,7 +716,7 @@ def test_the_page_sends_only_the_fields_that_changed() -> None:
 def test_the_page_says_the_tags_reached_the_disk_and_not_only_the_database() -> None:
     """A tick that meant "the database agreed" would be claiming the wrong half
     of D-1."""
-    script = frontend("tag.js")
+    script = frontend("outings.js")
     assert "beside them on disk" in script
 
 
@@ -723,7 +724,7 @@ def test_the_page_draws_an_override_as_its_own_statement() -> None:
     """FR-3.4 is the exception, and an exception that looks like everything
     else around it is not visible at all — the same argument as FR-1.4's two
     kinds of already-imported."""
-    assert "photo.override" in frontend("tag.js")
+    assert "photo.override" in frontend("outings.js")
     assert ".frame__override" in frontend("app.css")
     # Dashed, like `imported?` on the card grid: a frame saying something for
     # itself, not a different shade of the session's answer.
@@ -742,5 +743,5 @@ def test_the_hidden_attribute_beats_every_display_rule() -> None:
 def test_a_failure_is_shown_rather_than_swallowed() -> None:
     """FR-5.6 reaches the browser too: a sidecar that did not write must not
     leave the page looking saved."""
-    script = frontend("tag.js")
+    script = frontend("outings.js")
     assert "Not saved" in script

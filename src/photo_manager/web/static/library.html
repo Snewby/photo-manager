@@ -13,13 +13,19 @@
   <h1>Library</h1>
   <span id="counts" class="bar__note"></span>
   <div class="bar__spacer"></div>
-  <a class="button button--quiet" href="/triage">Triage</a>
-  <a class="button button--quiet" href="/tag">Tag</a>
 </header>
+
+<!-- Three ways into the same library: every photograph, the outings that
+     still need naming, and the outings themselves for reshaping or renaming. -->
+<nav class="views" aria-label="Library views">
+  <a class="views__tab" data-view="photos" href="/library">Photos</a>
+  <a class="views__tab" data-view="totag" href="/library?view=totag">To tag <span id="totag-count" class="views__count"></span></a>
+  <a class="views__tab" data-view="outings" href="/library?view=outings">Outings</a>
+</nav>
 
 <div id="error" class="banner banner--bad" hidden></div>
 
-<main class="library">
+<main class="library" id="view-photos">
 
   <!-- Left: FR-7.4. Every row says what it would cost to click it, and a row
        that would return nothing is not drawn at all. -->
@@ -49,6 +55,162 @@
     </div>
   </section>
 </main>
+
+<!-- To tag: FR-7.6's backlog, and the way to empty it — what Triage was. -->
+<section id="view-totag" class="triage" hidden>
+  <div class="triage__head">
+    <h2 id="totag-headline" class="triage__headline">—</h2>
+    <div class="progress">
+      <div class="progress__track"><div id="totag-bar" class="progress__bar"></div></div>
+    </div>
+    <p id="totag-progress" class="tag__hint"></p>
+    <p class="tag__hint">
+      A photograph is in this list when nothing has been said about it — no place,
+      no event, nobody in it, no tags. A star is not a description, so a frame
+      rated while culling is still here.
+    </p>
+  </div>
+  <p id="totag-done" class="empty" hidden>
+    Nothing left. Every photograph in the library has something said about it.
+  </p>
+  <div id="totag-list"></div>
+</section>
+
+<!-- Outings: every outing, and the days not grouped into one yet. The right
+     side is Edit outing — what the Tag page was: rename an outing, split or
+     merge a day, or give one frame its own place. -->
+<main id="view-outings" class="tag" hidden>
+  <aside class="tag__list">
+    <section id="o-ungrouped-section" hidden>
+      <h2 class="tag__heading">Not grouped yet</h2>
+      <p class="tag__hint">
+        A day becomes an outing when you say what shape it was — here, or with
+        one click in To tag. This is the place for a shape that isn't one of the
+        two obvious answers.
+      </p>
+      <ul id="o-ungrouped" class="days"></ul>
+    </section>
+
+    <section>
+      <h2 class="tag__heading">Outings</h2>
+      <p class="tag__hint">
+        Every outing, named or not — this is where you change one you have
+        already named.
+      </p>
+      <ul id="o-sessions" class="days"></ul>
+      <p id="o-no-sessions" class="tag__hint" hidden>None yet.</p>
+    </section>
+  </aside>
+
+  <section class="tag__panel">
+    <p id="o-panel-empty" class="tag__hint">
+      Choose an outing on the left to edit it. Working through everything that
+      still needs naming is quicker in <a href="/library?view=totag">To tag</a>.
+    </p>
+
+    <div id="o-panel" hidden>
+      <header class="panel__head">
+        <p class="tag__hint detail__scope">Edit outing</p>
+        <h2 id="o-panel-title">—</h2>
+        <p id="o-panel-sub" class="tag__hint"></p>
+      </header>
+
+      <form id="o-session-form" class="fields" autocomplete="off">
+        <label class="field">
+          <span class="field__label">Location</span>
+          <input id="o-location" type="text" list="loc-list" placeholder="St Aldo" class="field__input">
+        </label>
+        <label class="field">
+          <span class="field__label">Event</span>
+          <input id="o-event" type="text" placeholder="Beach day" class="field__input">
+        </label>
+        <label class="field">
+          <span class="field__label">People</span>
+          <input id="o-people" type="text" list="ppl-list" placeholder="Alice, Bob" class="field__input">
+        </label>
+        <label class="field">
+          <span class="field__label">Tags</span>
+          <input id="o-tags" type="text" list="tag-list" placeholder="beach, sunset" class="field__input">
+        </label>
+        <div class="fields__actions">
+          <button type="submit" class="button button--go">Apply to the whole outing</button>
+          <span id="o-save-note" class="tag__hint"></span>
+        </div>
+        <p class="tag__hint">
+          People and tags are comma separated, and replace what is there.
+          Everything here is written to the database <em>and</em> to an .xmp file
+          beside each photograph.
+        </p>
+      </form>
+
+      <div class="panel__grid" id="o-photos"></div>
+    </div>
+  </section>
+</main>
+
+<!-- One frame, when it disagrees with its outing (FR-3.4). -->
+<div id="o-sheet" class="sheet" hidden>
+  <div class="sheet__box">
+    <header class="sheet__head">
+      <h2 id="o-sheet-title">—</h2>
+      <button id="o-sheet-close" type="button" class="button button--quiet">Close</button>
+    </header>
+    <p id="o-sheet-sub" class="tag__hint"></p>
+    <form id="o-photo-form" class="fields" autocomplete="off">
+      <label class="field">
+        <span class="field__label">Location for this frame only</span>
+        <input id="o-p-location" type="text" list="loc-list" class="field__input"
+               placeholder="leave empty to use the outing's">
+      </label>
+      <label class="field">
+        <span class="field__label">People</span>
+        <input id="o-p-people" type="text" list="ppl-list" class="field__input">
+      </label>
+      <label class="field">
+        <span class="field__label">Tags</span>
+        <input id="o-p-tags" type="text" list="tag-list" class="field__input">
+      </label>
+      <label class="field">
+        <span class="field__label">Rating</span>
+        <select id="o-p-rating" class="field__input">
+          <option value="0">unrated</option>
+          <option value="1">1</option><option value="2">2</option>
+          <option value="3">3</option><option value="4">4</option>
+          <option value="5">5</option>
+        </select>
+      </label>
+      <div class="fields__actions">
+        <button type="submit" class="button button--go">Save this frame</button>
+        <span id="o-sheet-note" class="tag__hint"></span>
+      </div>
+    </form>
+  </div>
+</div>
+
+<template id="o-day-template">
+  <li class="day">
+    <button type="button" class="day__button">
+      <span class="day__date"></span>
+      <span class="day__count"></span>
+      <span class="day__where"></span>
+    </button>
+    <div class="day__actions" hidden>
+      <button type="button" class="button button--quiet day__accept"></button>
+      <button type="button" class="button button--quiet day__one">One outing</button>
+    </div>
+  </li>
+</template>
+
+<template id="o-frame-template">
+  <figure class="frame">
+    <button type="button" class="frame__button">
+      <img class="frame__image" alt="" loading="lazy" decoding="async">
+      <span class="frame__rating" hidden></span>
+      <span class="frame__override" hidden></span>
+    </button>
+    <figcaption class="frame__caption"></figcaption>
+  </figure>
+</template>
 
 <!-- One group of the filter panel. -->
 <template id="facet-template">
@@ -159,9 +321,13 @@
         </div>
       </form>
 
+      <p id="edit-outing-row" class="tag__hint" hidden>
+        <a id="edit-outing" href="/library?view=outings">Edit outing</a> — split, merge or rename it.
+      </p>
+
       <p id="no-outing" class="tag__hint" hidden>
         Not grouped into an outing yet, so it has no event.
-        <a href="/tag">Group its day</a> to give it one.
+        <a id="group-day" href="/library?view=outings">Group its day</a> to give it one.
       </p>
 
       <!-- Where its files are kept, and whether Free up Mac space may take
@@ -199,6 +365,8 @@
 </template>
 
 <script src="/static/strip.js"></script>
+<script src="/static/totag.js"></script>
+<script src="/static/outings.js"></script>
 <script src="/static/library.js"></script>
 </body>
 </html>

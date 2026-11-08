@@ -2489,20 +2489,49 @@ def test_the_triage_endpoint_takes_no_path_either(settings: Settings) -> None:
     test_no_route_accepts_a_filesystem_path(settings)
 
 
-def test_the_triage_page_is_served(backlog: TestClient) -> None:
-    response = backlog.get("/triage")
+def test_the_old_triage_and_tag_pages_land_in_the_library(backlog: TestClient) -> None:
+    """Five screens became two. Bookmarks to the old ones still work."""
+    for old, new in (("/triage", "/library?view=totag"), ("/tag", "/library?view=outings")):
+        response = backlog.get(old, follow_redirects=False)
+        assert response.status_code in (302, 307), old
+        assert response.headers["location"] == new
+    page = backlog.get("/triage").text
+    assert "totag.js" in page
+    assert 'id="view-totag"' in page
+    assert 'id="view-outings"' in page
 
+
+def test_with_no_card_the_app_opens_on_the_library(settings: Settings) -> None:
+    """No card path configured (the usual case) and nothing removable attached:
+    there is no card workflow to show, so / is the Library."""
+    settings = replace(settings, card_dcim_root=None)
+    with client_for(settings) as client:
+        response = client.get("/", follow_redirects=False)
+        status = client.get("/api/status").json()["card"]["status"]
+    assert status == "no-media"
+    assert response.status_code in (302, 307)
+    assert response.headers["location"] == "/library"
+
+
+def test_a_configured_card_path_that_is_missing_is_still_said_on_the_card_page(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """Only "no card at all" goes to the Library. A card_dcim_root that is not
+    there is a problem with a sentence, and the card page is where it is said."""
+    settings = replace(settings, card_dcim_root=tmp_path / "nowhere" / "DCIM")
+    with client_for(settings) as client:
+        response = client.get("/", follow_redirects=False)
     assert response.status_code == 200
-    assert "triage.js" in response.text
+    assert 'id="status-message"' in response.text
 
 
 def test_the_page_offers_a_day_at_a_time_and_never_a_frame_at_a_time(
     backlog: TestClient,
 ) -> None:
-    """The design failure this screen exists to avoid is typing a location
+    """The design failure this list exists to avoid is typing a location
     fifty-four times (FR-3.3), and a backlog with a form per photograph would
     be exactly that with a progress bar on top."""
-    script = _frontend("triage.js")
+    script = _frontend("totag.js")
 
     assert "/api/library/sessions/" in script
     assert "Apply to all " in script
@@ -2515,7 +2544,7 @@ def test_the_page_offers_a_day_at_a_time_and_never_a_frame_at_a_time(
 def test_the_page_follows_the_action_the_server_named(backlog: TestClient) -> None:
     """The same rule as the facet links: the browser does what the server
     worked out rather than re-deriving a rule about sessions from counts."""
-    script = _frontend("triage.js")
+    script = _frontend("totag.js")
 
     for action in ("group-and-tag", "shape"):
         assert action in script, action
@@ -2525,23 +2554,36 @@ def test_the_page_follows_the_action_the_server_named(backlog: TestClient) -> No
 def test_the_page_offers_both_answers_to_a_gap(backlog: TestClient) -> None:
     """The refactor: asking is not deciding, and refusing to ask was the wrong
     end of the same stick."""
-    page = backlog.get("/triage").text
-    script = _frontend("triage.js")
+    script = _frontend("totag.js")
 
-    assert "backlog__split" in page
-    assert "backlog__one" in page
+    assert "backlog__split" in script
+    assert "backlog__one" in script
     assert "one_session: asOne" in script
     # The one shape it still cannot express, offered where it could be wanted.
     assert "blocks.length < 3" in script
 
 
-def test_the_tagging_screen_says_what_it_is_now_for(backlog: TestClient) -> None:
-    """Two screens that both name an outing need to say which is which, or
-    the overlap is just confusion with a nav bar."""
-    page = backlog.get("/tag").text
+def test_apply_to_all_waits_for_every_gap_question_to_be_answered() -> None:
+    """Applying to "all" of a day nobody has shaped would be answering the
+    shape question for them."""
+    script = _frontend("totag.js")
 
-    assert 'href="/triage"' in page
+    assert "applyAll" in script
+    assert "disabled = shaping > 0" in script
+
+
+def test_the_outings_view_says_what_it_is_now_for(backlog: TestClient) -> None:
+    """Two views that both name an outing need to say which is which, or
+    the overlap is just confusion with a tab bar."""
+    page = backlog.get("/library").text
+
+    assert 'href="/library?view=totag"' in page
     assert "already named" in page
+    assert "Edit outing" in page
+    script = _frontend("outings.js")
+    # Its own names, so it cannot collide with the grid's script on one page.
+    assert script.lstrip().startswith("/*")
+    assert "window.Outings = (() => {" in script
 
 
 def test_the_page_reloads_the_backlog_after_every_apply(
@@ -2549,15 +2591,16 @@ def test_the_page_reloads_the_backlog_after_every_apply(
 ) -> None:
     """Which is what makes the list empty as it is worked, rather than a row
     being hidden by the page while the server still holds it."""
-    script = _frontend("triage.js")
+    script = _frontend("totag.js")
 
-    assert "await load();" in script
+    assert "await refresh();" in script
+    assert "refresh: () => loadToTag({ draw: true })" in _frontend("library.js")
 
 
 def test_the_page_says_what_untagged_means(backlog: TestClient) -> None:
     """The definition was the hard part of this unit, so the screen carries
     it rather than leaving it in a requirements document."""
-    page = backlog.get("/triage").text
+    page = backlog.get("/library?view=totag").text
 
     assert "no place" in page
     assert "A star is not a description" in page
@@ -2566,12 +2609,14 @@ def test_the_page_says_what_untagged_means(backlog: TestClient) -> None:
 def test_the_backlog_is_reachable_from_every_other_screen(
     backlog: TestClient,
 ) -> None:
-    """FR-7.6 says first-class, and a view nobody can find is not that."""
-    for page in ("/library", "/tag"):
-        assert 'href="/triage"' in backlog.get(page).text, page
-    # The card workflow's Tag step is the same list, narrowed to the card.
-    assert "/static/totag.js" in backlog.get("/").text
+    """FR-7.6 says first-class, and a view nobody can find is not that. The
+    top bar is Card and Library; To tag is a tab of the Library, and the card
+    workflow's Tag step is the same list narrowed to the card."""
+    assert 'href="/library?view=totag"' in backlog.get("/library").text
+    assert 'href="/library"' in _frontend("strip.js")
+    assert "/static/totag.js" in _frontend("index.html")
     assert "ToTag.mount" in _frontend("card.js")
+    assert "ToTag.mount" in _frontend("library.js")
 
 
 def test_the_stylesheet_draws_a_day_that_cannot_be_cleared_from_here(

@@ -420,6 +420,10 @@ function drawOutingForm(photo) {
   const grouped = photo.session_id !== null;
   $("outing-form").hidden = !grouped;
   $("no-outing").hidden = grouped;
+  $("edit-outing-row").hidden = !grouped;
+  $("edit-outing").href = grouped ? `/library?view=outings&outing=${photo.session_id}` : "";
+  $("group-day").href =
+    `/library?view=outings&day=${encodeURIComponent(photo.captured_at.slice(0, 10))}`;
   if (!grouped) return;
   const count = photo.session_photographs;
   $("outing-scope").textContent =
@@ -702,6 +706,81 @@ for (const [id, kind, list] of [
   wireAutocomplete($(id), kind, $(list));
 }
 
+/* ---------------------------------------------------------------- views */
+
+/* Three views of one library. Photos is the grid and its filters. To tag is
+ * the backlog (what Triage was), drawn by the same component as the card
+ * workflow's Tag step. Outings is every outing and Edit outing (what Tag was).
+ * Which one is open is in the URL, like the filter and the photograph are. */
+const VIEWS = ["photos", "totag", "outings"];
+let gridLoaded = false;
+let toTag = null;
+
+function showView(view, { outing = null, day = null } = {}) {
+  $("view-photos").hidden = view !== "photos";
+  $("view-totag").hidden = view !== "totag";
+  $("view-outings").hidden = view !== "outings";
+  for (const tab of document.querySelectorAll(".views__tab")) {
+    const on = tab.dataset.view === view;
+    tab.classList.toggle("views__tab--on", on);
+    if (on) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  }
+  // The grid is fetched the first time it is shown, not before.
+  if (view === "photos" && !gridLoaded) {
+    gridLoaded = true;
+    load(state.params, { push: false });
+  }
+  if (view === "totag") loadToTag({ draw: true });
+  if (view === "outings") Outings.show({ outing, day });
+}
+
+function switchView(view) {
+  closeDetail({ remember: false });
+  const url = view === "photos"
+    ? (state.params ? `/library?${state.params}` : "/library")
+    : `/library?view=${view}`;
+  history.pushState({ params: state.params, photo: null }, "", url);
+  showView(view);
+}
+
+for (const tab of document.querySelectorAll(".views__tab")) {
+  tab.addEventListener("click", (event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey) return;  // a new tab
+    event.preventDefault();
+    switchView(tab.dataset.view);
+  });
+}
+
+/** Fetch the backlog: always for the tab's count, and the list when asked. */
+async function loadToTag({ draw = false } = {}) {
+  let data;
+  try {
+    data = await api("/api/library/triage");
+  } catch (exc) {
+    if (draw) fail(exc.message);
+    return;
+  }
+  const units = data.units.length;
+  $("totag-count").textContent = units ? `(${units})` : "";
+  if (!draw) return;
+  const { photographs, untagged, tagged, days } = data.counts;
+  $("totag-headline").textContent = untagged === 0
+    ? "Nothing left to tag"
+    : `${untagged} of ${photographs} have nothing said about them`;
+  $("totag-bar").style.width = `${photographs === 0 ? 100 : (tagged / photographs) * 100}%`;
+  $("totag-progress").textContent = untagged === 0
+    ? `${photographs} tagged`
+    : `${tagged} tagged · ${untagged} to go · ${units} to name across ${days} day${days === 1 ? "" : "s"}`;
+  $("totag-done").hidden = untagged > 0;
+  if (!toTag) {
+    // Every action reloads the whole backlog, which is what makes the list
+    // empty as it is worked rather than a row being hidden by the page.
+    toTag = ToTag.mount($("totag-list"), { refresh: () => loadToTag({ draw: true }) });
+  }
+  toTag.draw(data.units);
+}
+
 /* ------------------------------------------------------------- wiring */
 
 $("more").onclick = () => load(state.params, { append: true });
@@ -714,8 +793,17 @@ $("clear-all").onclick = () => load("");
 function splitSearch(search) {
   const params = new URLSearchParams(search.replace(/^\?/, ""));
   const photo = params.get("photo");
-  params.delete("photo");
-  return { params: params.toString(), photo: photo === null ? null : Number(photo) };
+  const view = params.get("view") || "photos";
+  const outing = params.get("outing");
+  const day = params.get("day");
+  for (const name of ["photo", "view", "outing", "day"]) params.delete(name);
+  return {
+    params: params.toString(),
+    photo: photo === null ? null : Number(photo),
+    view: VIEWS.includes(view) ? view : "photos",
+    outing: outing === null ? null : Number(outing),
+    day,
+  };
 }
 
 // Back and forward walk the filters, which is the point of putting them in
@@ -723,8 +811,14 @@ function splitSearch(search) {
 // because the filter underneath has just changed.
 window.addEventListener("popstate", (event) => {
   const here = splitSearch(location.search);
-  const params = (event.state && event.state.params) ?? here.params;
   closeDetail({ remember: false });
+  if (here.view !== "photos") {
+    showView(here.view, here);
+    return;
+  }
+  const params = (event.state && event.state.params) ?? here.params;
+  gridLoaded = true;
+  showView("photos");
   load(params, { push: false });
 });
 
@@ -745,6 +839,12 @@ if ("IntersectionObserver" in window) {
  * so the filter is in hand before the detail view asks what is either side of
  * it within that filter. */
 const opening = splitSearch(location.search);
-load(opening.params, { push: false }).then(() => {
-  if (opening.photo !== null) openDetail(opening.photo, { remember: false });
-});
+gridLoaded = opening.view === "photos";
+showView(opening.view, opening);
+if (opening.view === "photos") {
+  load(opening.params, { push: false }).then(() => {
+    if (opening.photo !== null) openDetail(opening.photo, { remember: false });
+  });
+}
+// The To tag tab says how many outings are waiting, whichever view is open.
+loadToTag({ draw: opening.view === "totag" });
