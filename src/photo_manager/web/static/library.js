@@ -135,6 +135,7 @@ const HEADINGS = {
   tag: "Tags",
   rating: "Rating",
   year: "Year",
+  month: "Month",
   raw: "RAW",
   storage: "Where",
 };
@@ -144,7 +145,10 @@ function drawFacets(facets) {
   host.textContent = "";
 
   let rows = 0;
+  const months = facets.month || [];
   for (const [dimension, values] of Object.entries(facets)) {
+    // Months are drawn under their year rather than as a group of their own.
+    if (dimension === "month") continue;
     if (!values.length) continue;
     // A dimension with a single value is drawn anyway, even though clicking
     // it would change nothing. On this library today every one of them reads
@@ -157,35 +161,123 @@ function drawFacets(facets) {
     const list = group.querySelector(".facet__values");
 
     for (const value of values) {
-      const row = $("facet-value-template").content.cloneNode(true);
-      const pick = row.querySelector(".facet__pick");
-      row.querySelector(".facet__label").textContent = value.label;
-      row.querySelector(".facet__count").textContent = value.count;
-      if (value.selected) {
-        row.querySelector(".facet__row").classList.add("facet__row--on");
-        pick.setAttribute("aria-pressed", "true");
-      }
-      pick.onclick = () => load(value.params);
-
-      const clear = row.querySelector(".facet__clear");
-      clear.hidden = !value.selected;
-      clear.onclick = () => load(value.clear);
-
-      list.append(row);
+      list.append(facetRow(value));
       rows += 1;
+      if (dimension === "year") rows += drawMonths(list, value, months, values.length);
     }
     host.append(group);
   }
+  drawRange();
 
   $("filters-empty").hidden = rows > 0;
   $("clear-all").hidden = !state.params;
 }
 
+/** One clickable row of the panel. The link is the server's, never built here. */
+function facetRow(value, { nested = false } = {}) {
+  const row = $("facet-value-template").content.cloneNode(true);
+  const pick = row.querySelector(".facet__pick");
+  const item = row.querySelector(".facet__row");
+  row.querySelector(".facet__label").textContent = value.label;
+  row.querySelector(".facet__count").textContent = value.count;
+  if (nested) item.classList.add("facet__row--nested");
+  if (value.selected) {
+    item.classList.add("facet__row--on");
+    pick.setAttribute("aria-pressed", "true");
+  }
+  pick.onclick = () => load(value.params);
+
+  const clear = row.querySelector(".facet__clear");
+  clear.hidden = !value.selected;
+  clear.onclick = () => load(value.clear);
+  return row;
+}
+
+/* A year's months, under it. Open when the year or one of its months is the
+ * filter, or when it is the only year; otherwise one click away, so ten years
+ * of a library is ten rows rather than a hundred and twenty. */
+const openYears = new Set();
+
+function drawMonths(list, year, months, years) {
+  const mine = months.filter((month) => String(month.value).startsWith(`${year.value}-`));
+  if (!mine.length) return 0;
+  const chosen = year.selected || mine.some((month) => month.selected);
+  const open = chosen || years === 1 || openYears.has(year.value);
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "facet__expand";
+  toggle.textContent = open ? "▾" : "▸";
+  toggle.title = open ? "Hide the months" : "Show the months";
+  toggle.setAttribute("aria-expanded", String(open));
+  list.lastElementChild.prepend(toggle);
+  toggle.onclick = () => {
+    if (openYears.has(year.value)) openYears.delete(year.value);
+    else openYears.add(year.value);
+    refreshPanel();
+  };
+  if (!open) return 0;
+  for (const month of mine) {
+    const row = facetRow({ ...month, label: month.label.replace(/ \d{4}$/, "") }, { nested: true });
+    list.append(row);
+  }
+  return mine.length;
+}
+
+/* A date range of your own: the two ends are the same since/until a year or
+ * a month sets, so the panel, the URL and Back all treat it like any filter. */
+function drawRange() {
+  const params = new URLSearchParams(state.params);
+  $("range-since").value = params.get("since") || "";
+  $("range-until").value = params.get("until") || "";
+  $("range-clear").hidden = !params.has("since") && !params.has("until");
+}
+
+function applyRange(since, until) {
+  const params = new URLSearchParams(state.params);
+  for (const [name, value] of [["since", since], ["until", until]]) {
+    if (value) params.set(name, value);
+    else params.delete(name);
+  }
+  load(params.toString());
+}
+
+$("range").addEventListener("submit", (event) => {
+  event.preventDefault();
+  let since = $("range-since").value;
+  let until = $("range-until").value;
+  // Either way round means the same days; the server refuses a backwards one.
+  if (since && until && since > until) [since, until] = [until, since];
+  applyRange(since, until);
+});
+$("range-clear").addEventListener("click", () => applyRange("", ""));
+
 /* ----------------------------------------------------------------- grid */
+
+/* Newest first, with a heading wherever the day changes — so a long grid
+ * reads as days, and a page appended below carries on from the last one. */
+let lastDay = null;
+
+function dayHeading(day) {
+  const heading = document.createElement("h3");
+  heading.className = "grid__day";
+  const date = new Date(`${day}T12:00:00`);
+  heading.textContent = Number.isNaN(date.getTime()) ? day : date.toLocaleDateString("en-GB", {
+    weekday: "long", day: "numeric", month: "long", year: "numeric",
+  });
+  heading.dataset.day = day;
+  return heading;
+}
 
 function drawTiles(photos) {
   const grid = $("grid");
+  if (!grid.firstChild) lastDay = null;
   for (const photo of photos) {
+    const day = photo.captured_at.slice(0, 10);
+    if (day !== lastDay) {
+      grid.append(dayHeading(day));
+      lastDay = day;
+    }
     const node = $("card-template").content.cloneNode(true);
     // Held before the fragment is appended, because appending empties it and
     // anything looked up afterwards is null.

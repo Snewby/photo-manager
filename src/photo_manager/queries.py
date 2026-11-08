@@ -90,6 +90,7 @@ DIMENSIONS: tuple[str, ...] = (
     "tag",
     "rating",
     "year",
+    "month",
     "raw",
     "storage",
 )
@@ -241,6 +242,9 @@ class Query:
             case "year":
                 year = int(value)  # type: ignore[call-overload]
                 return replace(self, since=dt.date(year, 1, 1), until=dt.date(year, 12, 31))
+            case "month":
+                first, last = _month_bounds(value)
+                return replace(self, since=first, until=last)
             case "storage":
                 return replace(self, storage=str(value))
             case _:  # "raw"
@@ -275,6 +279,8 @@ class Query:
                 year = int(value)  # type: ignore[call-overload]
                 return (self.since == dt.date(year, 1, 1)
                         and self.until == dt.date(year, 12, 31))
+            case "month":
+                return (self.since, self.until) == _month_bounds(value)
             case "storage":
                 return self.storage == value
             case _:  # "raw"
@@ -303,12 +309,25 @@ class Query:
                 return replace(self, tags=_removed(self.tags, value))
             case "rating":
                 return replace(self, rating_min=None)
-            case "year":
+            case "year" | "month":
+                # One date range underneath both, so taking either off takes
+                # the range off.
                 return replace(self, since=None, until=None)
             case "storage":
                 return replace(self, storage=None)
             case _:  # "raw"
                 return replace(self, has_raw=None)
+
+
+def _month_bounds(value: object) -> tuple[dt.date, dt.date]:
+    """The first and last day of a ``YYYY-MM`` month."""
+    try:
+        year, month = (int(part) for part in str(value).split("-"))
+        first = dt.date(year, month, 1)
+    except ValueError:
+        raise QueryError(f"A month is written YYYY-MM, not {value!r}") from None
+    following = dt.date(year + (month == 12), month % 12 + 1, 1)
+    return first, following - dt.timedelta(days=1)
 
 
 def _removed(existing: tuple[object, ...], value: object) -> tuple[object, ...]:
@@ -451,6 +470,8 @@ class Facets:
     tags: tuple[FacetValue, ...] = ()
     ratings: tuple[FacetValue, ...] = ()
     years: tuple[FacetValue, ...] = ()
+    #: ``YYYY-MM``, newest first. The panel draws each under its year.
+    months: tuple[FacetValue, ...] = ()
     raw: tuple[FacetValue, ...] = ()
     triage: tuple[FacetValue, ...] = ()
     storage: tuple[FacetValue, ...] = ()
@@ -463,6 +484,7 @@ class Facets:
         "tag": "tags",
         "rating": "ratings",
         "year": "years",
+        "month": "months",
         "raw": "raw",
         "storage": "storage",
     }
@@ -865,6 +887,7 @@ def facets(catalog: Catalog, query: Query = Query()) -> Facets:
         "tag": _link_facets(catalog, query, "tag"),
         "rating": _rating_facets(catalog, query),
         "year": _year_facets(catalog, query),
+        "month": _month_facets(catalog, query),
         "raw": _raw_facets(catalog, query),
         "storage": _storage_facets(catalog, query),
     }
@@ -880,6 +903,7 @@ def facets(catalog: Catalog, query: Query = Query()) -> Facets:
         tags=kept["tag"],
         ratings=kept["rating"],
         years=kept["year"],
+        months=kept["month"],
         raw=kept["raw"],
         storage=kept["storage"],
     )
@@ -918,10 +942,10 @@ def _keep_selected(catalog: Catalog, query: Query, dimension: str,
         )
         for value in missing
     )
-    if dimension in ("rating", "year"):
-        # These two are ordered by their value rather than by their count, so
-        # a row appended at the end would sit out of sequence.
-        return tuple(sorted(kept, key=lambda v: int(v.value), reverse=True))  # type: ignore[call-overload]
+    if dimension in ("rating", "year", "month"):
+        # These are ordered by their value rather than by their count, so a
+        # row appended at the end would sit out of sequence.
+        return tuple(sorted(kept, key=lambda v: str(v.value).zfill(7), reverse=True))
     return kept
 
 
@@ -942,6 +966,9 @@ def _selected_values(query: Query, dimension: str) -> tuple[object, ...]:
         case "year":
             year = query.since.year if query.since is not None else None
             return (year,) if year is not None and query.selects("year", year) else ()
+        case "month":
+            month = None if query.since is None else query.since.strftime("%Y-%m")
+            return (month,) if month is not None and query.selects("month", month) else ()
         case "storage":
             return () if query.storage is None else (query.storage,)
         case _:  # "raw"
@@ -972,6 +999,8 @@ def _label_for(catalog: Catalog, dimension: str, value: object) -> str:
             return "5 stars" if value == 5 else f"{value}+ stars"
         case "year":
             return str(value)
+        case "month":
+            return _month_label(str(value))
         case "storage":
             return _STORAGE_LABELS.get(str(value), str(value))
         case _:  # "raw"
@@ -1155,6 +1184,39 @@ def _year_facets(catalog: Catalog, query: Query) -> tuple[FacetValue, ...]:
             label=row["year"],
             count=int(row["n"]),
             query=query.selecting("year", int(row["year"])),
+        )
+        for row in rows
+    )
+
+
+def _month_label(value: str) -> str:
+    first, _ = _month_bounds(value)
+    return first.strftime("%B %Y")
+
+
+def _month_facets(catalog: Catalog, query: Query) -> tuple[FacetValue, ...]:
+    """Months with photographs in them, newest first, for browsing by date.
+
+    Counted with the date range lifted — the same as the years — because a
+    month is another way to set that one range, so the count beside it is
+    what clicking it gives whatever range is on now (FR-7.4a).
+    """
+    where, parameters = _where(query, without=["year"])
+    rows = _rows(
+        catalog,
+        f"""
+        SELECT substr(p.captured_at, 1, 7) AS month, count(*) AS n
+        {_from(query, without=["year"])} {where}
+        GROUP BY month ORDER BY month DESC
+        """,
+        parameters,
+    )
+    return tuple(
+        FacetValue(
+            value=row["month"],
+            label=_month_label(row["month"]),
+            count=int(row["n"]),
+            query=query.selecting("month", row["month"]),
         )
         for row in rows
     )

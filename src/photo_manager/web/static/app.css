@@ -1263,3 +1263,30 @@ body {
 .views__tab--on { color: var(--text); border-bottom-color: var(--accent); }
 .views__count { color: var(--accent); }
 .day--wanted { outline: 1px solid var(--accent); border-radius: 6px; }
+
+/* Browsing by date: months under their year, a range of your own, and a
+ * heading wherever the grid's day changes. */
+.facet__row--nested { padding-left: 18px; }
+.facet__row--nested .facet__label { color: var(--text-dim); }
+.facet__expand {
+  width: 18px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.range { margin: 0 0 14px; }
+.range__field { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 12px; color: var(--text-dim); }
+.range__field span { width: 34px; }
+.range__field .field__input { flex: 1; min-width: 0; color-scheme: dark; }
+.range__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.grid__day {
+  grid-column: 1 / -1;
+  margin: 10px 0 -4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.grid__day:first-child { margin-top: 0; }

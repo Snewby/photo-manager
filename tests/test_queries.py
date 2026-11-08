@@ -394,8 +394,8 @@ def test_adding_a_filter_never_grows_the_result(library: Fixture) -> None:
 
     for dimension in DIMENSIONS:
         for value in facets(library.catalog, base).of(dimension):
-            if dimension == "year":
-                continue  # a year facet *replaces* the range it was computed without
+            if dimension in ("year", "month"):
+                continue  # a year or month *replaces* the range it was computed without
             assert count(library.catalog, value.query) <= baseline
 
 
@@ -1778,3 +1778,50 @@ def test_the_real_library_is_still_the_triage_backlog_it_was_yesterday(
         "no photograph in the real library is without a location any more — "
         "update this test and EXECUTION_PLAN.md §1, which still says 0 locations"
     )
+
+
+# ----------------------------------------------------------------------
+# Browsing by month
+# ----------------------------------------------------------------------
+
+
+def test_the_months_are_every_month_with_photographs_newest_first(library: Fixture) -> None:
+    months = facets(library.catalog).of("month")
+
+    assert [(m.value, m.label, m.count) for m in months] == [
+        ("2026-09", "September 2026", 10),
+        ("2026-07", "July 2026", 2),
+        ("2025-12", "December 2025", 3),
+    ]
+
+
+def test_a_month_is_its_first_to_its_last_day(library: Fixture) -> None:
+    september = Query().selecting("month", "2026-09")
+    december = Query().selecting("month", "2025-12")
+
+    assert (september.since, september.until) == (dt.date(2026, 9, 1), dt.date(2026, 9, 30))
+    assert (december.since, december.until) == (dt.date(2025, 12, 1), dt.date(2025, 12, 31))
+    assert count(library.catalog, september) == 10
+    assert september.selects("month", "2026-09")
+    assert not september.selects("year", 2026)
+    # Taking it off takes the date range off, whichever row it is taken from.
+    assert september.clearing("month") == Query()
+    assert Query().selecting("year", 2026).clearing("month") == Query()
+
+
+def test_a_month_that_is_on_is_drawn_on(library: Fixture) -> None:
+    """Under its year, the chosen month is the row with the cross beside it."""
+    september = Query().selecting("month", "2026-09")
+    [selected] = [m for m in facets(library.catalog, september).of("month")
+                  if september.selects("month", m.value)]
+
+    assert selected.value == "2026-09"
+    # Months are counted with the range lifted, so the other months still show.
+    assert len(facets(library.catalog, september).of("month")) == 3
+
+
+def test_a_month_that_is_not_one_is_refused() -> None:
+    with pytest.raises(QueryError):
+        Query().selecting("month", "2026-13")
+    with pytest.raises(QueryError):
+        Query().selecting("month", "September")

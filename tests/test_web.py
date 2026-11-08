@@ -3306,3 +3306,38 @@ def test_eject_waits_for_an_import_to_finish(
 
 def test_eject_takes_no_path_either(settings: Settings) -> None:
     test_no_route_accepts_a_filesystem_path(settings)
+
+
+# ----------------------------------------------------------------------
+# Browsing the library by date
+# ----------------------------------------------------------------------
+
+
+def test_months_arrive_with_the_panel_and_click_through_to_their_days(
+    library: TestClient,
+) -> None:
+    """A month row is a link like every other facet: its count is what
+    clicking it gives, and clicking it is a since/until range."""
+    data = library.get("/api/library/photos").json()
+    months = data["facets"]["month"]
+    assert months, "no month rows"
+    for month in months:
+        assert month["params"].startswith(f"since={month['value']}-01&until={month['value']}-")
+        clicked = library.get(f"/api/library/photos?{month['params']}").json()
+        assert clicked["total"] == month["count"], month["value"]
+        assert all(p["captured_at"].startswith(month["value"]) for p in clicked["photos"])
+
+
+def test_the_page_browses_by_month_by_range_and_by_day(library: TestClient) -> None:
+    script = _frontend("library.js")
+    page = library.get("/library").text
+
+    # Months drawn under their year, not as a heading of their own.
+    assert 'dimension === "month"' in script
+    assert "drawMonths" in script
+    # A range of your own sets the same two parameters a year or month does.
+    assert 'id="range-since"' in page and 'id="range-until"' in page
+    assert 'params.set(name, value)' in script
+    # A heading wherever the day changes, carried across appended pages.
+    assert "dayHeading" in script and "lastDay" in script
+    assert ".grid__day" in _frontend("app.css")

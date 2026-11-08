@@ -35,6 +35,18 @@
       <button id="clear-all" type="button" class="button button--quiet" hidden>Clear all</button>
     </div>
     <p id="filters-empty" class="tag__hint" hidden>Nothing to filter on yet.</p>
+    <!-- Any run of days. A year or a month in the panel sets the same range. -->
+    <form id="range" class="range" autocomplete="off">
+      <h3 class="facet__name">Dates</h3>
+      <label class="range__field"><span>From</span>
+        <input id="range-since" type="date" class="field__input"></label>
+      <label class="range__field"><span>To</span>
+        <input id="range-until" type="date" class="field__input"></label>
+      <div class="range__actions">
+        <button type="submit" class="button button--quiet">Show these days</button>
+        <button id="range-clear" type="button" class="button button--quiet" hidden>Any date</button>
+      </div>
+    </form>
     <div id="facets"></div>
   </aside>
 

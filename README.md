@@ -111,7 +111,7 @@ photographs.
 src/photo_manager/     application code
   config.py            settings; the library root contract
   cards.py             finds the card and reads it — never writes to it
-  culling.py           keep/skip decisions, where they persist, what they'll cost
+  culling.py           keep/leave/reject decisions, where they persist, what they'll cost
   importing.py         copies keepers into the library, verified byte for byte
   archive.py           mirrors the library onto the archive drive, verified, add-only
   offload.py           frees up Mac space for what the archive holds, and brings it back
@@ -241,74 +241,92 @@ Then open <http://127.0.0.1:8000/>. It binds to localhost and nothing else; this
 local-only application serving the contents of a photo library, so exposing it on a
 network has to be an explicit `--host`.
 
-The page is the card's contact sheet. It paints from embedded EXIF thumbnails, so the
-first screenful arrives in about 0.8 s and the whole thousand-frame grid in about 20 s while
-you are already looking at it. Photos whose filename the catalog already knows are dimmed
-and marked `imported?`; **Confirm by hash** settles those in the background — about a
-minute for two hundred candidates — and they become a flat `imported`. The two are never drawn
-the same way, because a filename match is a guess and a hash is not.
+There are two places, in the bar across the top: **Card**, while a card is in the
+reader, and **Library**. With no card attached, `/` opens the Library.
 
 `--card <path>` forces a DCIM folder instead of probing the volumes, which is how the app
 gets exercised with no card in the reader.
 
-The bar across the top reaches the other four screens: **Triage** (what is left to
-tag — the main path for an untagged library), **Library** (everything, filtered),
-**Tag** (shapes and revisions: splitting a day an unusual way, merging particular
-blocks, or changing an outing you already named) and the card's own contact sheet.
+## The card workflow
 
-## Culling a card
+With a card in, <http://127.0.0.1:8000/> is a row of five steps — **Review → Import →
+Archive → Tag → Format card** — and opens on the first one that needs you. A step is
+ticked only when its work is really done, worked out from what the app already knows:
+frames not yet decided, keepers not yet imported, photographs not yet on the archive
+drive, this card's outings with no name. Walking past a step does not tick it. Each step
+has one main button; once its work is done that is **Continue to …**. Old links to
+`/cull` land on Review.
 
-Click **Cull**, or go straight to <http://127.0.0.1:8000/cull>. One photograph at a time,
-one keystroke each:
+### 1. Review
+
+One photograph at a time, one keystroke each — or **Grid** (`G`) for the whole card as a
+contact sheet, where clicking a frame opens it. The grid paints from embedded EXIF
+thumbnails, so the first screenful arrives in about 0.8 s.
 
 | Key | Does |
 |---|---|
-| `K` | keep, and move on |
-| `X` | skip, and move on |
+| `K` | keep — import it to the Mac — and move on |
+| `L` | leave it on the card, and move on |
+| `X` | reject, and move on |
 | `1`–`5` | keep at that rating, and move on |
 | `0` | keep, no rating, and move on |
 | `R` | also keep the RAF for this frame |
 | `←` `→` | back and forward without deciding |
 | `U` | undo this frame's decision |
-| `G` / `Esc` | back to the grid |
+| `G` | one at a time / grid |
 
-The keys are listed along the bottom of the screen, and `?` adds a note on what each
-one does.
+**Leave on card** and **Reject** both keep a frame out of the import. The difference is
+what formatting the card would mean: a rejected frame is fine to lose, a frame you chose
+to leave is not, and Format card says so. (On disk a reject is still written `skip`, so
+older decision files read the same.)
 
-**Nothing is copied, moved or deleted.** Each decision is appended to
+**Nothing is copied, moved or deleted while you review.** Each decision is appended to
 `state\cull\<card-key>.jsonl` and fsynced before the keystroke is acknowledged, so
 closing the app — or killing it — loses nothing and reopening resumes at the first frame
-you had not judged. Changing your mind is another line; the last one wins. The import
-that acts on all this is a separate, later step.
-
-**Where every frame has got to.** Each tile on the card page has a badge:
-
-| Badge | Means |
-|---|---|
-| *undecided* | not culled yet |
-| *keep* | copied into the library at the next import |
-| *skip* | left out of the import; it stays on the card |
-| *in library?* | a library photo has this filename, not yet confirmed by hash |
-| *in library* | confirmed by hash, but not in the last backup |
-| *backed up* | in the library and in the last backup snapshot |
-
-The page counts each badge and says whether the card is **safe to format in the
-camera**: every frame either backed up or deliberately skipped. If it isn't, the page
-says what is in the way. Nothing in this app deletes from the card; formatting it in the
-camera is the only thing that does.
+you had not judged. Changing your mind is another line; the last one wins.
 
 The header keeps a running count of keepers and what they will cost against the free
 space on the library volume, **measured as you go**, and warns before the keepers would
 fill it. Decisions are remembered per card, keyed by the card's volume serial number, so
-the same card on a different drive letter still picks up where you left off — and a
+the same card in a different reader still picks up where you left off — and a
 reformatted one correctly starts again.
 
-## Importing the keepers
+Photos whose filename the catalog already knows are dimmed and marked `imported?` and are
+not offered for review. The Import step confirms them by hash in the background, and they
+become a flat `imported`. The two are never drawn the same way, because a filename match
+is a guess and a hash is not.
 
-On the grid page, **Plan the import** and then **Import**. Two steps on purpose: the
-first reads EXIF headers and tells you the names, the folders, the total size and any
-collisions, and copies nothing. The second is the only button in this app that writes a
-photograph anywhere.
+### 2. Import
+
+The plan, then one button — see *Importing the keepers*, below. Frames the library
+already has by filename are confirmed by hash here, in the background.
+
+### 3. Archive
+
+Copies whatever the archive drive is missing (or, with no archive drive set up, takes a
+backup), reading every file back to check it. Reached by continuing from Import it starts
+by itself; with the drive unplugged it says **Plug in My Passport** and waits.
+
+### 4. Tag
+
+This card's outings that have nothing said about them — the Library's **To tag** list,
+narrowed to the card — with **Apply to all** for a card that was one trip. It can be
+skipped; naming can wait, and formatting the card cannot lose a tag.
+
+### 5. Format card
+
+What formatting would lose: anything kept that is not yet on the drive, and anything you
+chose to leave on the card. Rejected frames are listed as fine to lose. Then **Eject
+card**, and format it in the camera. Nothing in this app deletes from the card;
+formatting it in the camera is the only thing that does.
+
+## Importing the keepers (step 2)
+
+The Import step shows the plan first — it reads EXIF headers and tells you the names,
+the folders, the total size and any collisions, and copies nothing — then one button,
+**Import N to Mac**, the only button in this app that writes a photograph anywhere. When
+it finishes the step moves on to Archive by itself. The import has already hashed every
+byte it copied, so the card is not read again to confirm those frames.
 
 From a terminal, the same thing:
 
@@ -423,25 +441,22 @@ second becomes `st-aldo-2` rather than being merged into the first.
 A location belongs to an outing, and every photograph in it inherits it. Any single frame
 can disagree, and clearing that disagreement gives the outing's answer back.
 
-The screen for it is **Tag**, below; grouping and tagging are the same page.
+The place for it is the Library's **Outings**, below; grouping and tagging are the same view.
 
-## Tagging — shapes and revisions
+## Editing an outing
 
-```
-.venv\Scripts\python.exe tools\serve.py
-```
+In the Library, **Outings** (old links to `/tag` land here), or **Edit outing** from any
+photograph.
 
-Then <http://127.0.0.1:8000/tag>.
+**Working through a backlog is quicker in To tag.** This view is for the two things that
+one cannot do: deciding a day's shape when neither *split it* nor *all one outing* is the
+answer you want — keeping the second and third blocks together but not the first — and
+changing an outing you have already named, which To tag no longer lists because there is
+nothing left to say about it.
 
-**Working through a backlog is quicker on Triage.** This screen is for the two things
-that one cannot do: deciding a day's shape when neither *split it* nor *all one outing*
-is the answer you want — keeping the second and third blocks together but not the first
-— and changing an outing you have already named, which Triage no longer lists because
-there is nothing left to say about it.
-
-The left column is every day and every outing. Pick one and the panel on the right takes
-a location, an event, people and tags, and **Apply to the whole outing** puts all of it
-on every photograph in one action. That is the whole point: typing a location fifty
+The left column is every day and every outing. Pick one and **Edit outing** on the right
+takes a location, an event, people and tags, and **Apply to the whole outing** puts all
+of it on every photograph in one action. That is the whole point: typing a location fifty
 times is the thing this is here to prevent.
 
 Clicking a single frame opens it on its own, for the exception — a shot from somewhere
@@ -461,8 +476,12 @@ database.
 .venv\Scripts\python.exe tools\serve.py
 ```
 
-Then <http://127.0.0.1:8000/library>. The whole library, newest first, with a filter
-panel down the left.
+Then <http://127.0.0.1:8000/library>. The whole library, newest first, a heading for each
+day, with a filter panel down the left.
+
+**Finding a time.** Each year in the panel opens to its months, each with its count; a
+**From / To** pair above the filters shows any run of days. All three set the same date
+range, so it is in the address bar like any other filter.
 
 **Every row in the panel tells you what it costs before you click it.** *St Aldo 54*,
 *4+ stars 12*, *Nobody tagged 300* — and the number beside a filter is exactly how many
@@ -508,7 +527,7 @@ Two forms, and the difference between them matters. **This frame only** takes a 
 of its own, people, tags and a rating — one photograph. **The whole outing** takes the
 outing's location and its event, and says how many photographs that is before you press
 it. A photograph that has not been grouped into an outing yet says so and links to the
-screen that would group it.
+Outings view, where its day can be grouped. A grouped one has **Edit outing**.
 
 If you rate a photograph out of the filter you were looking at, it stays on screen and
 the line at the top says *not in this filter* rather than quietly taking it away. The
@@ -516,11 +535,9 @@ counts on the left are recomputed after every save.
 
 ## Working through what is not tagged yet
 
-```
-.venv\Scripts\python.exe tools\serve.py
-```
-
-Then <http://127.0.0.1:8000/triage>. This is the list of what is left.
+In the Library, **To tag** — the tab says how many outings are waiting (old links to
+`/triage` land here). This is the list of what is left; the card workflow's Tag step is
+the same list narrowed to one card.
 
 A photograph is on it when **nothing has been said about it** — no place, no event,
 nobody in it, no tags. A star does not count: it says a frame was worth keeping, not
@@ -549,7 +566,7 @@ which is correct: there is more to name than there was.
 
 The one thing this screen cannot do is a shape that is neither of those two answers
 — keeping the second and third blocks of a three-block day together but not the
-first. That is what **Tag** is for.
+first. That is what **Outings** is for.
 
 ## If the database is ever lost or wrong
 
