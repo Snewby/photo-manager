@@ -47,7 +47,7 @@ from typing import Any, Literal
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Query as QueryParam, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from pydantic import BaseModel, Field
@@ -740,8 +740,11 @@ def create_app(
         return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
 
     @app.get("/cull")
-    def cull_page() -> FileResponse:
-        return FileResponse(STATIC_DIR / "cull.html", media_type="text/html")
+    def cull_page(start: str | None = None) -> RedirectResponse:
+        """The cull is the card workflow's Review step now. Old bookmarks
+        land there, on the frame they named."""
+        query = {"step": "review"} | ({"start": start} if start else {})
+        return RedirectResponse(f"/?{urlencode(query)}", status_code=307)
 
     @app.get("/tag")
     def tag_page() -> FileResponse:
@@ -1436,6 +1439,7 @@ def _json(payload: dict[str, Any]) -> Response:
 def _session_payload(state: AppState, session: CardSession) -> dict[str, Any]:
     scan = session.scan
     stages = _frame_stages(state, session)
+    lifecycle = _lifecycle_payload(stages, archive=state.settings.archive_root is not None)
     return {
         "scan_id": session.scan_id,
         "scanned_at": session.scanned_at.isoformat(timespec="seconds"),
@@ -1445,9 +1449,8 @@ def _session_payload(state: AppState, session: CardSession) -> dict[str, Any]:
         "bytes": {"jpeg": scan.jpeg_bytes, "total": scan.total_bytes},
         "confirm": _confirm_payload(session.confirm.snapshot()),
         "cull": _cull_payload(state, session),
-        "lifecycle": _lifecycle_payload(
-            stages, archive=state.settings.archive_root is not None
-        ),
+        "lifecycle": lifecycle,
+        "workflow": _workflow_payload(session, lifecycle, _card_outings(state, session)),
         "photos": [
             {**_photo_payload(session.scan_id, index, photo), **stages[index]}
             for index, photo in enumerate(scan.photos)
@@ -1548,6 +1551,74 @@ def _lifecycle_payload(
     }
 
 
+#: The card workflow's steps, in the order a card goes through them.
+STEPS = ("review", "import", "archive", "tag", "format")
+
+
+def _workflow_payload(
+    session: CardSession, lifecycle: dict[str, Any], outings: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Which steps of the card workflow are done, and which one needs attention.
+
+    **Done means the work is done**, worked out from what the server already
+    knows rather than from which buttons were pressed: a step the user walked
+    past is not done, and one finished outside the workflow (an archive run
+    from the Library) is. Archive and Tag are only done once Import is, since
+    an import makes more of both.
+
+    ``current`` is the first step not done. Format card is never done — it is
+    where the workflow ends, and the card leaving the reader is its end.
+    """
+    counts = lifecycle["counts"]
+    imported = (
+        counts[Stage.KEEP] == 0
+        and counts[Stage.LIKELY_IN_LIBRARY] == 0
+        and not session.importing.running
+    )
+    steps = [
+        {"key": "review", "done": counts[Stage.UNDECIDED] == 0,
+         "count": counts[Stage.UNDECIDED]},
+        {"key": "import", "done": imported,
+         "count": counts[Stage.KEEP] + counts[Stage.LIKELY_IN_LIBRARY]},
+        {"key": "archive", "done": imported and counts[Stage.IN_LIBRARY] == 0,
+         "count": counts[Stage.IN_LIBRARY]},
+        {"key": "tag", "done": imported and not outings, "count": len(outings)},
+        {"key": "format", "done": False, "count": 0},
+    ]
+    assert tuple(step["key"] for step in steps) == STEPS
+    return {
+        "steps": steps,
+        "current": next(step["key"] for step in steps if not step["done"]),
+        "outings": outings,
+    }
+
+
+def _card_outings(state: AppState, session: CardSession) -> list[dict[str, Any]]:
+    """This card's outings that still have nothing said about them.
+
+    Only frames hash-confirmed as in the library count as this card's: a
+    filename match could be any photograph that ever had that name.
+    """
+    ids = [
+        photo.matched_photo_id for photo in session.scan.photos
+        if photo.dedup == Dedup.IMPORTED and photo.matched_photo_id is not None
+    ]
+    if not ids:
+        return []
+    with open_catalog(state.settings) as catalog:
+        if catalog is None:
+            return []
+        units = queries.backlog(catalog, photo_ids=ids)
+        proposals = (
+            {proposal.day: proposal for proposal in propose(catalog)}
+            if any(not unit.grouped for unit in units) else {}
+        )
+        return [
+            _backlog_unit_payload(unit, None if unit.grouped else proposals.get(unit.day))
+            for unit in units
+        ]
+
+
 def _location_payload(location: CardLocation) -> dict[str, Any]:
     """The whole of FR-1.1a, carried through to the browser.
 
@@ -1576,6 +1647,7 @@ def _backup_payload(state: AppState) -> dict[str, Any]:
         "attached": status.attached,
         "message": status.message,
         "volume": status.volume,
+        "drive": _drive_name(state.settings.backup_root),
         "free_bytes": status.free_bytes,
         "last_taken": status.last_taken,
         "last_snapshot": status.last_snapshot,
@@ -1601,6 +1673,16 @@ def _backup_payload(state: AppState) -> dict[str, Any]:
     }
 
 
+def _drive_name(root: Path | None) -> str | None:
+    """The name of the drive a configured folder is on — "My Passport" for
+    ``/Volumes/My Passport/Photos`` — known without the drive attached, so a
+    page can say which one to plug in. None for a folder on this Mac."""
+    if root is None:
+        return None
+    parts = Path(root).parts
+    return parts[2] if len(parts) > 2 and parts[1] == "Volumes" else None
+
+
 def _archive_payload(state: AppState) -> dict[str, Any]:
     status = state.archive_status()
     progress = state.archive_progress()
@@ -1610,6 +1692,7 @@ def _archive_payload(state: AppState) -> dict[str, Any]:
         "attached": status.attached,
         "message": status.message,
         "volume": status.volume,
+        "drive": _drive_name(state.settings.archive_root),
         "free_bytes": status.free_bytes,
         "last_verified": None if status.last_verified is None
         else status.last_verified.isoformat(timespec="seconds"),

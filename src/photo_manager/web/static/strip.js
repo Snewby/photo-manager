@@ -1,6 +1,7 @@
 // The strip under every page's header: is the card safe, and is the library
-// backed up. Shared by all five pages, so neither question depends on which
-// screen you happen to be on.
+// backed up. Shared by every page, so neither question depends on which
+// screen you happen to be on. It also draws the top bar's two places, Card
+// and Library, because it is already asking whether a card is in.
 //
 // The card half is only ever loud: it appears when macOS has a card mounted
 // read-write (which is itself a write — §4.1) and offers the one-click fix.
@@ -13,6 +14,28 @@
 (() => {
   const header = document.querySelector('header.bar');
   if (!header) return;
+
+  // The top bar: two places, Card and Library. Card is offered only while a
+  // card is in the reader (or on the card page itself); the page's own title
+  // stays for screen readers and the window's title, the nav says where you are.
+  const nav = document.createElement('nav');
+  nav.className = 'bar__nav';
+  nav.setAttribute('aria-label', 'Places');
+  nav.innerHTML = `
+    <a class="bar__link" data-nav="card" href="/" hidden>Card</a>
+    <a class="bar__link" data-nav="library" href="/library">Library</a>`;
+  const title = header.querySelector('h1');
+  if (title) {
+    title.classList.add('visually-hidden');
+    title.after(nav);
+  } else {
+    header.prepend(nav);
+  }
+  const here = window.location.pathname === '/' ? 'card' : 'library';
+  const cardLink = nav.querySelector('[data-nav="card"]');
+  cardLink.hidden = here !== 'card';
+  nav.querySelector(`[data-nav="${here}"]`).classList.add('bar__link--on');
+  nav.querySelector(`[data-nav="${here}"]`).setAttribute('aria-current', 'page');
 
   const strip = document.createElement('section');
   strip.className = 'strip';
@@ -81,6 +104,7 @@
   }
 
   function drawCard(card) {
+    cardLink.hidden = here !== 'card' && !(card && card.found);
     const unsafe = card && card.found && card.writable === true;
     cardRow.hidden = !unsafe;
     if (!unsafe) return;

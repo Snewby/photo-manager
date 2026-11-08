@@ -50,7 +50,7 @@ from ..backup import BackupError, BackupResult
 from ..offload import OffloadError, OffloadResult
 from ..cards import (
     CardError, CardLocation, CardPhoto, CardScan, Dedup, card_writable, confirm_imports,
-    detect_card, remount_read_only, scan_card,
+    detect_card, remount_read_only, scan_card, settle_known,
 )
 from ..catalog import Catalog
 from ..config import Settings
@@ -418,6 +418,11 @@ class AppState:
         # Three, because the work is one card read plus one decode and the
         # reader is the limit (C-4). More threads queue on the same bandwidth.
         self._previews = ThreadPoolExecutor(max_workers=3, thread_name_prefix="preview")
+        #: Content hashes of card files, by (path, size), learned from imports
+        #: and confirming passes that had to read every byte anyway. A rescan after an import uses
+        #: them to settle the frames it just copied without reading the card
+        #: again (cards.settle_known).
+        self._learned: dict[tuple[str, int], str] = {}
         self._prefetching: set[tuple[str, int]] = set()
 
     # ------------------------------------------------------------------
@@ -445,6 +450,8 @@ class AppState:
             started = time.perf_counter()
             with open_catalog(self.settings) as catalog:
                 scan = scan_card(self.settings, catalog=catalog)
+                if catalog is not None:
+                    scan = settle_known(scan, self._learned, catalog)
             elapsed = time.perf_counter() - started
 
             session = CardSession(
@@ -576,6 +583,12 @@ class AppState:
                 # confirm_imports preserves order, so every index the browser
                 # already holds still points at the same frame.
                 session.scan = settled
+                # Kept, so a later rescan settles these without reading again.
+                for photo in settled.photos:
+                    if photo.content_hash is not None:
+                        self._learned[(str(photo.primary), photo.jpeg_bytes or photo.raw_bytes)] = (
+                            photo.content_hash
+                        )
                 self._retarget(session)
             self._finish(scan_id, status=ConfirmStatus.DONE, seconds=time.perf_counter() - started)
 
@@ -843,6 +856,11 @@ class AppState:
             if outcome is not None:
                 session.importing.done = len(outcome.imported) + len(outcome.skipped) \
                     + len(outcome.failed)
+                # The import read every byte it copied and hashed them; keep
+                # the answer so the next scan need not read the card again.
+                for entry in (*outcome.imported, *outcome.skipped):
+                    planned = entry.planned
+                    self._learned[(str(planned.source), planned.jpeg_bytes)] = entry.content_hash
 
     # ------------------------------------------------------------------
     # The card's mount (§4.1, macOS)

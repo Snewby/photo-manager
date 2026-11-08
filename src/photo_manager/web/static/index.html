@@ -8,16 +8,14 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23222'/><circle cx='8' cy='9' r='3.5' fill='none' stroke='%23e8b64c' stroke-width='1.5'/><rect x='5' y='3' width='6' height='2' rx='1' fill='%23e8b64c'/></svg>">
 <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body class="card-body">
 
 <header class="bar">
   <h1>Card</h1>
+  <span id="card-name" class="bar__note"></span>
   <div class="bar__spacer"></div>
-  <a id="to-cull" class="button" href="/cull" hidden>Cull</a>
-  <a class="button button--quiet" href="/triage">Triage</a>
-  <a class="button button--quiet" href="/library">Library</a>
-  <a class="button button--quiet" href="/tag">Tag</a>
-  <button id="rescan" type="button" class="button">Rescan</button>
+  <button id="rescan" type="button" class="button button--quiet">Rescan</button>
+  <button id="help-toggle" type="button" class="button button--quiet" aria-label="Keys">?</button>
 </header>
 
 <!-- FR-1.1a lives here. Four situations, four messages, and never an empty
@@ -27,65 +25,210 @@
   <p id="status-message" class="status__message"></p>
 </section>
 
-<section id="summary" class="summary" hidden>
-  <dl class="summary__figures">
-    <div><dt>Photographs</dt><dd id="count-photos">—</dd></div>
-    <div><dt>RAW pairs</dt><dd id="count-pairs">—</dd></div>
-    <div><dt>Unpaired</dt><dd id="count-unpaired">—</dd></div>
-    <div><dt>On the card</dt><dd id="count-bytes">—</dd></div>
-    <div class="summary__headline"><dt>To cull</dt><dd id="count-to-cull">—</dd></div>
+<!-- The workflow. A step is ticked only when its work really is done, which
+     the server works out; clicking any step goes to it. -->
+<nav id="steps" class="steps" aria-label="Steps" hidden>
+  <ol class="steps__list">
+    <li><button type="button" class="steps__item" data-step="review">
+      <span class="steps__num">1</span><span class="steps__name">Review</span>
+      <span class="steps__state"></span></button></li>
+    <li><button type="button" class="steps__item" data-step="import">
+      <span class="steps__num">2</span><span class="steps__name">Import</span>
+      <span class="steps__state"></span></button></li>
+    <li><button type="button" class="steps__item" data-step="archive">
+      <span class="steps__num">3</span><span class="steps__name" data-archive-name>Archive</span>
+      <span class="steps__state"></span></button></li>
+    <li><button type="button" class="steps__item" data-step="tag">
+      <span class="steps__num">4</span><span class="steps__name">Tag</span>
+      <span class="steps__state"></span></button></li>
+    <li><button type="button" class="steps__item" data-step="format">
+      <span class="steps__num">5</span><span class="steps__name">Format card</span>
+      <span class="steps__state"></span></button></li>
+  </ol>
+</nav>
+
+<div id="panels" class="panels" hidden>
+
+  <!-- 1. Review: one frame at a time, or the whole card as a grid. -->
+  <section class="step step--review" data-panel="review" hidden>
+    <div class="step__head">
+      <div class="step__intro">
+        <h2 class="step__title">Review</h2>
+        <p id="review-lede" class="step__lede"></p>
+      </div>
+      <div class="toggle" role="group" aria-label="View">
+        <button id="view-one" type="button" class="toggle__option" aria-pressed="true">One at a time</button>
+        <button id="view-grid" type="button" class="toggle__option" aria-pressed="false">Grid</button>
+      </div>
+      <span id="tally" class="bar__tally"></span>
+      <button type="button" class="button step__continue" data-next="import">Continue to Import</button>
+    </div>
+
+    <!-- FR-4.5. Hidden until it is true, because a warning that is always on
+         screen is not a warning. -->
+    <div id="space-warning" class="warning" hidden></div>
+    <div id="error" class="warning warning--bad" hidden></div>
+    <div id="resumed" class="notice" hidden></div>
+
+    <div id="review-one" class="review">
+      <div class="review__where">
+        <span id="position" class="bar__position">—</span>
+        <span id="filename" class="bar__filename">—</span>
+      </div>
+      <main class="stage">
+        <img id="preview" class="stage__image" alt="">
+        <p id="stage-message" class="stage__message"></p>
+      </main>
+      <footer class="verdict">
+        <span id="verdict-chip" class="verdict__chip">undecided</span>
+        <span id="rating" class="verdict__rating" title="0-5 (FR-4.2)"></span>
+        <span id="raw-chip" class="verdict__raw" hidden>+ RAW</span>
+        <span id="meaning" class="verdict__meaning"></span>
+        <div class="bar__spacer"></div>
+        <span id="progress" class="verdict__progress"></span>
+      </footer>
+      <!-- Always on screen. A key you have to remember is a key you have to
+           look up, and the ? panel is one more keystroke away than this. -->
+      <nav class="keys" aria-label="Keys">
+        <span><kbd>K</kbd> import to Mac</span>
+        <span><kbd>L</kbd> leave on card</span>
+        <span><kbd>X</kbd> reject</span>
+        <span><kbd>1</kbd>–<kbd>5</kbd> keep + stars</span>
+        <span><kbd>0</kbd> keep, no stars</span>
+        <span><kbd>R</kbd> also keep RAW</span>
+        <span><kbd>U</kbd> undo</span>
+        <span><kbd>←</kbd> <kbd>→</kbd> previous / next</span>
+        <span><kbd>G</kbd> grid</span>
+        <span><kbd>?</kbd> more</span>
+      </nav>
+    </div>
+
+    <div id="review-grid" class="review__grid" hidden>
+      <div id="grid" class="grid" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- 2. Import: the plan, then one button. The only button in this app that
+       writes a photograph, so the names and the total are on screen first. -->
+  <section class="step" data-panel="import" hidden>
+    <div class="step__head">
+      <div class="step__intro">
+        <h2 class="step__title">Import</h2>
+        <p id="import-lede" class="step__lede"></p>
+      </div>
+      <button type="button" class="button step__continue" data-next="archive">Continue to <span data-archive-name>Archive</span></button>
+    </div>
+    <div class="step__body">
+      <div id="import-plan" class="importer">
+        <p id="import-note" class="importer__note"></p>
+        <ul id="import-sample" class="importer__sample" hidden></ul>
+        <div class="importer__row">
+          <button id="import-go" type="button" class="button button--go" hidden>Import</button>
+        </div>
+      </div>
+      <div id="import-progress" class="progress" hidden>
+        <div class="progress__track"><div id="import-bar" class="progress__bar"></div></div>
+        <p id="import-text" class="progress__text"></p>
+      </div>
+      <ul id="import-problems" class="importer__problems" hidden></ul>
+      <!-- Frames the library already has by filename, being confirmed by
+           hash. Needed before the card can be called safe to format. -->
+      <div id="confirm-progress" class="progress" hidden>
+        <div class="progress__track"><div id="progress-bar" class="progress__bar"></div></div>
+        <p id="progress-text" class="progress__text"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Archive: copy to the archive drive (or back up), verified. -->
+  <section class="step" data-panel="archive" hidden>
+    <div class="step__head">
+      <div class="step__intro">
+        <h2 class="step__title" data-archive-name>Archive</h2>
+        <p id="archive-lede" class="step__lede"></p>
+      </div>
+      <button type="button" class="button step__continue" data-next="tag">Continue to Tag</button>
+    </div>
+    <div class="step__body">
+      <div class="importer__row">
+        <button id="archive-go" type="button" class="button button--go">Archive now</button>
+      </div>
+      <div id="archive-progress" class="progress" hidden>
+        <div class="progress__track"><div id="archive-bar" class="progress__bar"></div></div>
+      </div>
+      <p id="archive-text" class="progress__text"></p>
+    </div>
+  </section>
+
+  <!-- 4. Tag: this card's outings that still have nothing said about them. -->
+  <section class="step" data-panel="tag" hidden>
+    <div class="step__head">
+      <div class="step__intro">
+        <h2 class="step__title">Tag</h2>
+        <p id="tag-lede" class="step__lede"></p>
+      </div>
+      <button id="tag-skip" type="button" class="button button--quiet">Skip for now</button>
+      <button type="button" class="button step__continue" data-next="format">Continue to Format card</button>
+    </div>
+    <div class="step__body" id="tag-body"></div>
+  </section>
+
+  <!-- 5. Format card: is anything on this card still only on this card? -->
+  <section class="step" data-panel="format" hidden>
+    <div class="step__head">
+      <div class="step__intro">
+        <h2 class="step__title">Format card</h2>
+        <p id="format-lede" class="step__lede"></p>
+      </div>
+    </div>
+    <div class="step__body">
+      <!-- Where every frame has got to, and whether the card can be
+           formatted. Nothing in this app deletes from the card; formatting
+           it in the camera is the only thing that does. -->
+      <div id="lifecycle" class="lifecycle">
+        <div class="lifecycle__chips">
+          <span class="chip chip--stage-undecided"><b id="stage-undecided">0</b> undecided</span>
+          <span class="chip chip--stage-keep"><b id="stage-keep">0</b> keep — to import</span>
+          <span class="chip chip--stage-skip"><b id="stage-skip">0</b> rejected</span>
+          <span class="chip chip--stage-leave"><b id="stage-leave">0</b> left on card</span>
+          <span class="chip chip--stage-likely-in-library"><b id="stage-likely-in-library">0</b> in library?</span>
+          <span class="chip chip--stage-in-library"><b id="stage-in-library">0</b> <span data-archive-label="on the Mac, not on the archive drive yet">in library, not backed up</span></span>
+          <span class="chip chip--stage-backed-up"><b id="stage-backed-up">0</b> <span data-archive-label="on the archive drive">backed up</span></span>
+        </div>
+        <p id="format-note" class="lifecycle__format"></p>
+      </div>
+      <ul id="format-summary" class="summary-list"></ul>
+      <div id="eject-row" class="importer__row" hidden>
+        <button id="eject" type="button" class="button button--go">Eject card</button>
+        <span id="eject-note" class="importer__note"></span>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- Five keys to learn, which is FR-4.2's actual target. -->
+<aside id="help" class="help" hidden>
+  <h2>Keys</h2>
+  <dl>
+    <dt>K</dt><dd>keep, and move on — it is imported to the Mac</dd>
+    <dt>L</dt><dd>leave it on the card, and move on</dd>
+    <dt>X</dt><dd>reject, and move on — fine to lose when the card is formatted</dd>
+    <dt>1 – 5</dt><dd>keep at that rating, and move on</dd>
+    <dt>0</dt><dd>keep, no rating, and move on</dd>
+    <dt>R</dt><dd>also keep the RAF for this frame</dd>
+    <dt>← →</dt><dd>back and forward without deciding</dd>
+    <dt>U</dt><dd>undo this frame's decision</dd>
+    <dt>G</dt><dd>switch between one at a time and the grid</dd>
   </dl>
-
-  <div class="dedup">
-    <span class="chip chip--new"><b id="dedup-new">0</b> new</span>
-    <span class="chip chip--likely"><b id="dedup-likely">0</b> likely imported</span>
-    <span class="chip chip--imported"><b id="dedup-imported">0</b> imported</span>
-    <span class="chip chip--rescued"><b id="dedup-rescued">0</b> name reused</span>
-    <button id="confirm" type="button" class="button button--quiet" hidden>Confirm by hash</button>
-  </div>
-
-  <div id="confirm-progress" class="progress" hidden>
-    <div class="progress__track"><div id="progress-bar" class="progress__bar"></div></div>
-    <p id="progress-text" class="progress__text"></p>
-  </div>
-
-  <!-- Where every frame has got to, and whether the card can be formatted.
-       Nothing in this app deletes from the card; formatting it in the camera
-       is the only thing that does, so that is the question answered here. -->
-  <div id="lifecycle" class="lifecycle">
-    <div class="lifecycle__chips">
-      <span class="chip chip--stage-undecided"><b id="stage-undecided">0</b> undecided</span>
-      <span class="chip chip--stage-keep"><b id="stage-keep">0</b> keep — to import</span>
-      <span class="chip chip--stage-skip"><b id="stage-skip">0</b> rejected</span>
-      <span class="chip chip--stage-leave"><b id="stage-leave">0</b> left on card</span>
-      <span class="chip chip--stage-likely-in-library"><b id="stage-likely-in-library">0</b> in library?</span>
-      <span class="chip chip--stage-in-library"><b id="stage-in-library">0</b> <span data-archive-label="on the Mac, not on the archive drive yet">in library, not backed up</span></span>
-      <span class="chip chip--stage-backed-up"><b id="stage-backed-up">0</b> <span data-archive-label="on the archive drive">backed up</span></span>
-    </div>
-    <p id="format-note" class="lifecycle__format"></p>
-  </div>
-
-  <p class="summary__note" id="scan-note"></p>
-  <p class="summary__note" id="cull-note" hidden></p>
-
-  <!-- The import. Two steps on purpose: the first one copies nothing and
-       exists so the names and the total can be read before committing. -->
-  <div id="import" class="importer" hidden>
-    <div class="importer__row">
-      <button id="import-plan" type="button" class="button">Plan the import</button>
-      <button id="import-go" type="button" class="button button--go" hidden>Import</button>
-      <span id="import-note" class="importer__note"></span>
-    </div>
-    <ul id="import-sample" class="importer__sample" hidden></ul>
-    <div id="import-progress" class="progress" hidden>
-      <div class="progress__track"><div id="import-bar" class="progress__bar"></div></div>
-      <p id="import-text" class="progress__text"></p>
-    </div>
-    <ul id="import-problems" class="importer__problems" hidden></ul>
-  </div>
-</section>
-
-<main id="grid" class="grid" aria-live="polite"></main>
+  <p class="help__note">
+    Nothing is copied or deleted while you review. <b>Keep</b> marks a frame
+    to be copied to the Mac at the Import step; <b>leave</b> and <b>reject</b>
+    both leave it out of the import, but only a reject is fine to lose — the
+    Format card step warns before formatting would lose a frame you chose to
+    leave. Nothing in this app ever deletes from the card. Decisions are saved
+    as you make them and are still there after a restart.
+  </p>
+</aside>
 
 <template id="tile-template">
   <figure class="tile">
@@ -101,6 +244,6 @@
 </template>
 
 <script src="/static/strip.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/card.js"></script>
 </body>
 </html>

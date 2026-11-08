@@ -45,7 +45,7 @@ import os
 import string
 import sys
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,6 +67,7 @@ __all__ = [
     "detect_card",
     "scan_card",
     "confirm_imports",
+    "settle_known",
 ]
 
 
@@ -667,6 +668,52 @@ def confirm_imports(
             content_hash=digest,
         )
 
+    return CardScan(
+        location=scan.location,
+        photos=tuple(settled.get(id(p), p) for p in scan.photos),
+        ignored=scan.ignored,
+    )
+
+
+def settle_known(
+    scan: CardScan,
+    learned: Mapping[tuple[str, int], str],
+    catalog: Catalog,
+) -> CardScan:
+    """Settle frames whose hash is already known to be in the library, with no reads.
+
+    *learned* maps a card file (path as text, size in bytes) to the content
+    hash of its bytes, as read by something that had to read every byte
+    anyway — the import hashes what it copies. The rule is the one
+    :func:`confirm_imports` applies after reading: the hash is in the catalog,
+    so the frame is imported, and the catalog row it matches is that hash's
+    row rather than a name's. A frame not in *learned* is left alone for the
+    confirming pass to settle; one whose learned hash is not in the catalog is
+    left as it was.
+    """
+    if not learned:
+        return scan
+    known = catalog.photos.hashes()
+    settled: dict[int, CardPhoto] = {}
+    for photo in scan.photos:
+        # Not only filename matches: a frame the import skipped because its
+        # bytes were already in the library under another name is proved
+        # imported by the same hash, and offering it again would be wrong.
+        if photo.dedup == Dedup.IMPORTED:
+            continue
+        size = photo.jpeg_bytes or photo.raw_bytes
+        digest = learned.get((str(photo.primary), size))
+        if digest is None or digest not in known:
+            continue
+        row = catalog.photos.by_hash(digest)
+        settled[id(photo)] = _with(
+            photo,
+            dedup=Dedup.IMPORTED,
+            content_hash=digest,
+            matched_photo_id=photo.matched_photo_id if row is None else row.id,
+        )
+    if not settled:
+        return scan
     return CardScan(
         location=scan.location,
         photos=tuple(settled.get(id(p), p) for p in scan.photos),

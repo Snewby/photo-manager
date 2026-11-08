@@ -737,7 +737,9 @@ def neighbours(
     )
 
 
-def backlog(catalog: Catalog, *, covers: int = 5) -> tuple[BacklogUnit, ...]:
+def backlog(
+    catalog: Catalog, *, covers: int = 5, photo_ids: Iterable[int] | None = None,
+) -> tuple[BacklogUnit, ...]:
     """Everything with something still to say about it, newest first (FR-7.6).
 
     Two queries and no row objects: a backlog is a screen full of counts, and
@@ -776,6 +778,12 @@ def backlog(catalog: Catalog, *, covers: int = 5) -> tuple[BacklogUnit, ...]:
         """,
         [],
     )
+    if photo_ids is not None:
+        # Only the units that hold one of these photographs — a card's own
+        # outings, for the card workflow. Whole units, not the part of each
+        # that is on the card, because naming one names all of it (FR-3.3).
+        wanted = _units_of(catalog, photo_ids)
+        rows = [row for row in rows if (row["session_id"], row["day"]) in wanted]
     thumbnails = _covers(catalog, covers)
     return tuple(
         BacklogUnit(
@@ -789,6 +797,23 @@ def backlog(catalog: Catalog, *, covers: int = 5) -> tuple[BacklogUnit, ...]:
         )
         for row in rows
     )
+
+
+def _units_of(catalog: Catalog, photo_ids: Iterable[int]) -> set[tuple[int | None, str]]:
+    """The (session, day) backlog keys these photographs belong to."""
+    ids = sorted({int(photo_id) for photo_id in photo_ids})
+    found: set[tuple[int | None, str]] = set()
+    # In slices, because SQLite caps the number of bound parameters.
+    for start in range(0, len(ids), 500):
+        chunk = ids[start:start + 500]
+        rows = _rows(
+            catalog,
+            f"SELECT session_id, substr(captured_at, 1, 10) AS day FROM photo "
+            f"WHERE id IN ({', '.join('?' * len(chunk))})",
+            chunk,
+        )
+        found.update((row["session_id"], row["day"]) for row in rows)
+    return found
 
 
 def _covers(catalog: Catalog, wanted: int) -> dict[tuple[int | None, str], list[int]]:

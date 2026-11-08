@@ -1125,3 +1125,117 @@ body {
 .strip__row--warn { border-left-color: var(--likely); color: #f0c98a; }
 .strip__row--bad { border-left-color: var(--bad); background: #3a211d; color: #f0b3a8; }
 .strip__progress { margin: 0; max-width: none; padding: 0 20px 6px; }
+
+/* ------------------------------------------------------- the card workflow */
+
+/* The card page is a stepper: a rail of five steps, and one step's panel
+ * below it filling the rest of the window. The Review step's photograph is
+ * sized by that space, as the old culling view's was. */
+.card-body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.steps { background: var(--bg-raised); border-bottom: 1px solid var(--line); }
+.steps__list {
+  display: flex;
+  margin: 0;
+  padding: 0 12px;
+  list-style: none;
+  overflow-x: auto;
+}
+.steps__list li { flex: 1; min-width: 120px; }
+.steps__item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 8px 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.steps__item:hover { color: var(--text); }
+.steps__num {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 11px;
+  flex: none;
+}
+.steps__name { font-weight: 600; }
+.steps__state { font-size: 12px; white-space: nowrap; }
+.steps__item--done .steps__num { border-color: var(--new); color: var(--new); }
+.steps__item--done .steps__state { color: var(--new); }
+.steps__item--skipped .steps__state { color: var(--text-dim); font-style: italic; }
+.steps__item--attention .steps__num { border-color: var(--accent); color: var(--accent); }
+.steps__item--attention .steps__state { color: var(--accent); }
+.steps__item--on { color: var(--text); border-bottom-color: var(--accent); }
+
+.panels { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.step { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.step--review { overflow: hidden; }
+
+.step__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.step__intro { flex: 1; min-width: 240px; }
+.step__title { margin: 0; font-size: 16px; }
+.step__lede { margin: 2px 0 0; color: var(--text-dim); font-size: 13px; }
+.step__body { padding: 14px 18px 32px; }
+.step__body .importer { margin-top: 0; padding-top: 0; border-top: 0; }
+
+.toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.toggle__option {
+  padding: 4px 10px;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.toggle__option[aria-pressed="true"] { background: #2f343d; color: var(--text); }
+
+.review { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.review__where { display: flex; gap: 12px; padding: 6px 18px; font-size: 13px; }
+.review__grid { flex: 1; min-height: 0; overflow-y: auto; padding-top: 14px; }
+
+.summary-list { margin: 14px 0; padding-left: 20px; }
+.summary-list li { margin: 4px 0; }
+.summary-list__bad { color: #f0c98a; }
+
+/* The top bar's two places (strip.js draws them). */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.bar__nav { display: flex; gap: 4px; }
+.bar__link {
+  padding: 4px 12px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.03em;
+  text-decoration: none;
+}
+.bar__link:hover { color: var(--text); background: #272b33; }
+.bar__link--on { color: var(--text); background: #2f343d; }

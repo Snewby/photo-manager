@@ -692,7 +692,7 @@ def _frontend(name: str) -> str:
 
 def test_the_page_renders_every_dedup_state_the_api_can_produce() -> None:
     """A state the page has no case for renders as nothing, which reads as new."""
-    script = _frontend("app.js")
+    script = _frontend("card.js")
     for state in (Dedup.NEW, Dedup.LIKELY_IMPORTED, Dedup.IMPORTED, Dedup.NOT_IMPORTED):
         assert f"'{state}'" in script
 
@@ -703,7 +703,7 @@ def test_the_four_dedup_states_are_never_given_the_same_label() -> None:
     "Already imported" and "possibly already imported" mean different things to
     someone deciding whether a photograph is safe to lose.
     """
-    labels = re.findall(r"label: '([^']+)'", _frontend("app.js"))
+    labels = re.findall(r"label: '([^']+)'", _frontend("card.js"))
     assert len(labels) == 4
     assert len(set(labels)) == 4
 
@@ -1091,10 +1091,15 @@ def test_looking_at_a_frame_warms_the_ones_after_it(
 # ----------------------------------------------------------------------
 
 
-def test_the_culling_page_is_served(client: TestClient) -> None:
-    response = client.get("/cull")
-    assert response.status_code == 200
-    assert 'id="preview"' in response.text
+def test_the_culling_page_is_now_the_review_step(client: TestClient) -> None:
+    """Old bookmarks still work: /cull lands on the card workflow's Review
+    step, on the frame they named."""
+    response = client.get("/cull?start=DSCF1029.JPG", follow_redirects=False)
+    assert response.status_code in (302, 307)
+    assert response.headers["location"] == "/?step=review&start=DSCF1029.JPG"
+    page = client.get("/cull").text
+    assert 'id="preview"' in page
+    assert 'data-panel="review"' in page
 
 
 def test_the_page_binds_every_key_the_requirement_names() -> None:
@@ -1103,7 +1108,7 @@ def test_the_page_binds_every_key_the_requirement_names() -> None:
     A requirement listing keys is one of the few a test can check literally,
     and a missing binding is invisible until someone reaches for it mid-card.
     """
-    script = _frontend("cull.js")
+    script = _frontend("card.js")
     for key in ("ArrowRight", "ArrowLeft", "'k'", "'l'", "'x'", "'r'", "RATINGS"):
         assert key in script
     assert "'0', '1', '2', '3', '4', '5'" in script
@@ -1111,7 +1116,7 @@ def test_the_page_binds_every_key_the_requirement_names() -> None:
 
 def test_the_page_says_what_each_key_does() -> None:
     """Five keys to learn is only true if they are written down somewhere."""
-    page = _frontend("cull.html")
+    page = _frontend("index.html")
     for described in ("keep, and move on", "leave it on the card", "reject, and move on",
                       "keep the RAF"):
         assert described in page
@@ -1135,14 +1140,15 @@ def test_the_photograph_is_sized_by_the_stage_not_by_itself() -> None:
 
 
 def test_every_key_is_on_screen_without_asking_for_it() -> None:
-    page = _frontend("cull.html")
-    keys = page[page.index('<nav class="keys"'):page.index("</nav>")]
+    page = _frontend("index.html")
+    start = page.index('<nav class="keys"')
+    keys = page[start:page.index("</nav>", start)]
     for key in ("K", "L", "X", "1", "5", "0", "R", "U", "←", "→", "G", "?"):
         assert f"<kbd>{key}</kbd>" in keys
 
 
 def test_the_cull_says_what_each_verdict_will_do() -> None:
-    script = _frontend("cull.js")
+    script = _frontend("card.js")
     meaning = script[script.index("const MEANING"):]
     meaning = meaning[:meaning.index("};")]
     for verdict in Verdict.ALL:
@@ -1221,7 +1227,7 @@ def test_a_card_is_safe_to_format_only_once_its_keepers_are_backed_up(
 
 def test_the_page_draws_every_stage_the_api_can_produce() -> None:
     from photo_manager.web.app import Stage
-    script, styles, page = _frontend("app.js"), _frontend("app.css"), _frontend("index.html")
+    script, styles, page = _frontend("card.js"), _frontend("app.css"), _frontend("index.html")
     for stage in Stage.ALL:
         assert f"'{stage}': {{" in script
         assert f'id="stage-{stage}"' in page
@@ -1314,7 +1320,12 @@ def test_rescanning_after_an_import_offers_nothing_a_second_time(
     settings: Settings, card: Path
 ) -> None:
     """Success criterion 2, all the way round the loop for the first time:
-    cull, import, re-insert, and the card offers zero."""
+    cull, import, re-insert, and the card offers zero.
+
+    The rescan straight after the import settles the copied frames from the
+    hashes the import took, without reading the card again. After a restart
+    those are gone, so the filename is only evidence until the hash confirms it.
+    """
     put(card, "DSCF0001.JPG", fixtures.BURST_FIRST)
     put(card, "DSCF0002.JPG", fixtures.BURST_SECOND)
 
@@ -1326,13 +1337,19 @@ def test_rescanning_after_an_import_offers_nothing_a_second_time(
         _wait_for_import(client, scan_id)
 
         fresh = client.post("/api/card/scan").json()
-        assert fresh["counts"]["dedup"][Dedup.LIKELY_IMPORTED] == 2
+        assert fresh["counts"]["dedup"][Dedup.IMPORTED] == 2
+        assert fresh["counts"]["to_cull"] == 0
+        assert {photo["stage"] for photo in fresh["photos"]} == {"in-library"}
+
+    with client_for(settings) as restarted:
+        cold = restarted.get("/api/card").json()
+        assert cold["counts"]["dedup"][Dedup.LIKELY_IMPORTED] == 2
 
         # ... and the hash confirms it rather than the filename merely
         # suggesting it.
-        client.post(f"/api/card/{fresh['scan_id']}/confirm")
-        _wait_for_confirm(client, fresh["scan_id"])
-        settled = client.get("/api/card").json()
+        restarted.post(f"/api/card/{cold['scan_id']}/confirm")
+        _wait_for_confirm(restarted, cold["scan_id"])
+        settled = restarted.get("/api/card").json()
 
     assert settled["counts"]["dedup"][Dedup.IMPORTED] == 2
     assert settled["counts"]["to_cull"] == 0
@@ -1439,7 +1456,7 @@ def test_the_summary_of_an_import_survives_the_rescan_that_follows_it() -> None:
     # The guard itself, not merely a mention of the variable: assigning
     # `state.lastImport` and never reading it back would leave the summary just
     # as wiped, and a looser assertion stayed green when the read was deleted.
-    script = _frontend("app.js")
+    script = _frontend("card.js")
     assert "state.lastImport" in script
     assert "progress = state.lastImport" in script
 
@@ -1450,7 +1467,7 @@ def test_the_page_makes_the_import_two_steps() -> None:
     page = _frontend("index.html")
     assert 'id="import-plan"' in page
     assert 'id="import-go"' in page
-    script = _frontend("app.js")
+    script = _frontend("card.js")
     assert "renderImport" in script
 
 
@@ -2542,8 +2559,10 @@ def test_the_backlog_is_reachable_from_every_other_screen(
     backlog: TestClient,
 ) -> None:
     """FR-7.6 says first-class, and a view nobody can find is not that."""
-    for page in ("/", "/library", "/tag"):
+    for page in ("/library", "/tag"):
         assert 'href="/triage"' in backlog.get(page).text, page
+    # The card workflow's Tag step links to it from the script.
+    assert "'/triage'" in _frontend("card.js")
 
 
 def test_the_stylesheet_draws_a_day_that_cannot_be_cleared_from_here(
@@ -3042,3 +3061,147 @@ def test_without_an_archive_there_is_no_where_facet(settings: Settings) -> None:
     seed(settings, content_hash="a" * 64, library_path="2026/2026-01/a.jpg")
     with client_for(settings) as client:
         assert grid(client)["facets"]["storage"] == []
+
+
+# ----------------------------------------------------------------------
+# The card workflow: Review → Import → Archive → Tag → Format card
+# ----------------------------------------------------------------------
+
+
+def _workflow(payload: dict) -> tuple[str, dict[str, bool]]:
+    flow = payload["workflow"]
+    return flow["current"], {step["key"]: step["done"] for step in flow["steps"]}
+
+
+def test_the_workflow_opens_on_the_step_that_needs_attention(
+    settings: Settings, card: Path, backup_drive: Path
+) -> None:
+    """A step is done when its work is done — worked out from state the
+    server has, never from which buttons were pressed — and the page opens on
+    the first one that is not."""
+    settings = _archive_settings(settings, backup_drive)
+    put(card, "DSCF0818.JPG", fixtures.SPLIT_SECOND)
+    put(card, "DSCF1030.JPG", fixtures.BURST_SECOND)
+
+    with client_for(settings) as client:
+        fresh = client.get("/api/card").json()
+        scan_id = fresh["scan_id"]
+        decide(client, scan_id, 0, verdict="keep")
+        halfway = client.get("/api/card").json()
+        decide(client, scan_id, 1, verdict="leave")
+        reviewed = client.get("/api/card").json()
+
+        client.post(f"/api/card/{scan_id}/import")
+        _wait_for_import(client, scan_id)
+        imported = client.post("/api/card/scan").json()
+
+        client.post("/api/archive")
+        _wait_for_archive(client)
+        archived = client.get("/api/card").json()
+        outings = archived["workflow"]["outings"]
+
+        unit = outings[0]
+        session_id = unit["session_id"]
+        if session_id is None:
+            grouped = client.post("/api/library/sessions",
+                                  json={"day": unit["day"], "one_session": True}).json()
+            session_id = grouped["created"][0]["id"]
+        client.put(f"/api/library/sessions/{session_id}/tags", json={"location": "St Aldo"})
+        tagged = client.get("/api/card").json()
+
+    assert _workflow(fresh) == ("review", {
+        "review": False, "import": True, "archive": True, "tag": True, "format": False,
+    })
+    assert _workflow(halfway)[0] == "review"
+    # Something kept and not imported: Import needs attention, and Archive and
+    # Tag cannot be done while an import would add to both.
+    assert _workflow(reviewed) == ("import", {
+        "review": True, "import": False, "archive": False, "tag": False, "format": False,
+    })
+    assert _workflow(imported)[0] == "archive"
+    assert _workflow(archived)[0] == "tag"
+    # The whole unit, not only the card's part of it: naming an outing names
+    # all of it, and this day also holds the photograph the library had already.
+    assert len(outings) == 1 and outings[0]["photographs"] == 2
+    assert _workflow(tagged) == ("format", {
+        "review": True, "import": True, "archive": True, "tag": True, "format": False,
+    })
+    # The frame left on the card is why it is still not safe to format.
+    assert tagged["lifecycle"]["reasons"] == ["1 you chose to leave on the card would be lost"]
+
+
+def test_a_keeper_already_in_the_library_under_another_name_is_settled_by_the_import(
+    settings: Settings, card: Path
+) -> None:
+    """The import skips a frame whose bytes the library already has, and says
+    so. The rescan after it must not offer that frame as a keeper again —
+    the Import step would never be done."""
+    seed(settings, content_hash=content_hash(fixtures.BURST_FIRST),
+         library_path="2026/2026-01/renamed.jpg", original_name="SOMETHING_ELSE.JPG")
+    put(card, "DSCF0001.JPG", fixtures.BURST_FIRST)
+
+    with client_for(settings) as client:
+        before = client.get("/api/card").json()
+        decide(client, before["scan_id"], 0, verdict="keep")
+        client.post(f"/api/card/{before['scan_id']}/import")
+        outcome = _wait_for_import(client, before["scan_id"])["import"]["outcome"]
+        after = client.post("/api/card/scan").json()
+
+    assert before["photos"][0]["dedup"] == "new"
+    assert outcome["skipped"] == 1
+    [frame] = after["photos"]
+    assert frame["dedup"] == "imported"
+    assert frame["stage"] == "in-library"
+    assert _workflow(after)[1]["import"] is True
+
+
+def test_a_cards_outings_are_only_the_ones_its_photographs_are_in(
+    settings: Settings, card: Path
+) -> None:
+    """The Tag step is today's backlog narrowed to this card. Another day's
+    untagged outing in the library is not this card's business."""
+    seed(settings, content_hash="b" * 64, library_path="2026/2026-01/elsewhere.jpg",
+         original_name="ELSEWHERE.JPG", captured_at=dt.datetime(2026, 1, 3, 10, 0))
+    put(card, "DSCF0001.JPG", fixtures.BURST_FIRST)
+
+    with client_for(settings) as client:
+        scan_id = client.get("/api/card").json()["scan_id"]
+        assert client.get("/api/card").json()["workflow"]["outings"] == []
+        decide(client, scan_id, 0, verdict="keep")
+        client.post(f"/api/card/{scan_id}/import")
+        _wait_for_import(client, scan_id)
+        after = client.post("/api/card/scan").json()
+        backlog = client.get("/api/library/triage").json()
+
+    assert len(backlog["units"]) == 2
+    [outing] = after["workflow"]["outings"]
+    assert outing["day"] != "2026-01-03"
+
+
+def test_the_archive_says_which_drive_to_plug_in_while_it_is_unplugged(
+    settings: Settings, tmp_path: Path
+) -> None:
+    from photo_manager.web.app import _drive_name
+
+    assert _drive_name(Path("/Volumes/My Passport/Photos")) == "My Passport"
+    assert _drive_name(tmp_path / "archive") is None
+    assert _drive_name(None) is None
+    settings = replace(settings, archive_root=Path("/Volumes/No Such Drive Here/Photos"))
+    with client_for(settings) as client:
+        status = client.get("/api/status").json()
+    assert status["archive"]["attached"] is False
+    assert status["archive"]["drive"] == "No Such Drive Here"
+
+
+def test_the_card_page_is_a_stepper_with_one_panel_per_step(client: TestClient) -> None:
+    from photo_manager.web.app import STEPS
+
+    page = client.get("/").text
+    script = _frontend("card.js")
+    for step in STEPS:
+        assert f'data-step="{step}"' in page
+        assert f'data-panel="{step}"' in page
+        assert f"'{step}'" in script
+    # Every step but the last has a Continue button naming the next one.
+    for current, following in zip(STEPS, STEPS[1:]):
+        assert f'data-next="{following}"' in page, current
