@@ -75,6 +75,14 @@ def never_probe_the_real_machine(
         monkeypatch.setattr(cards, "card_writable", lambda path: False)
         monkeypatch.setattr(web_state, "card_writable", lambda path: False)
 
+    # Never eject anything real. A synthetic card is a folder on this Mac's own
+    # disk, and `diskutil eject` on it would be aimed at that disk. The tests
+    # that eject replace this with a recorder.
+    def refuse_to_eject(path: Path) -> None:
+        raise AssertionError(f"a test tried to eject {path} for real")
+
+    monkeypatch.setattr(web_state, "eject_card", refuse_to_eject)
+
 
 @pytest.fixture
 def card(tmp_path: Path) -> Path:
@@ -2561,8 +2569,9 @@ def test_the_backlog_is_reachable_from_every_other_screen(
     """FR-7.6 says first-class, and a view nobody can find is not that."""
     for page in ("/library", "/tag"):
         assert 'href="/triage"' in backlog.get(page).text, page
-    # The card workflow's Tag step links to it from the script.
-    assert "'/triage'" in _frontend("card.js")
+    # The card workflow's Tag step is the same list, narrowed to the card.
+    assert "/static/totag.js" in backlog.get("/").text
+    assert "ToTag.mount" in _frontend("card.js")
 
 
 def test_the_stylesheet_draws_a_day_that_cannot_be_cleared_from_here(
@@ -3205,3 +3214,50 @@ def test_the_card_page_is_a_stepper_with_one_panel_per_step(client: TestClient) 
     # Every step but the last has a Continue button naming the next one.
     for current, following in zip(STEPS, STEPS[1:]):
         assert f'data-next="{following}"' in page, current
+
+
+def test_eject_hands_the_card_back_and_says_what_formatting_would_lose(
+    settings: Settings, card: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Format card step's last button. Ejecting is an unmount; the answer
+    carries the card's lifecycle as it was, so the page can still say what
+    formatting would lose after the card has gone."""
+    ejected: list[Path] = []
+    monkeypatch.setattr(web_state, "eject_card", ejected.append)
+    put(card, "DSCF0001.JPG", fixtures.BURST_FIRST)
+
+    with client_for(settings) as client:
+        scan_id = client.get("/api/card").json()["scan_id"]
+        decide(client, scan_id, 0, verdict="leave")
+        answer = client.post("/api/card/eject")
+        stale = client.get(f"/api/card/{scan_id}/cull")
+
+    assert answer.status_code == 200
+    assert ejected == [card.parent]
+    body = answer.json()
+    assert body["lifecycle"]["reasons"] == ["1 you chose to leave on the card would be lost"]
+    # The scan described a card that is no longer there.
+    assert stale.status_code == 409
+
+
+def test_eject_waits_for_an_import_to_finish(
+    settings: Settings, card: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ejected: list[Path] = []
+    monkeypatch.setattr(web_state, "eject_card", ejected.append)
+    put(card, "DSCF0001.JPG", fixtures.BURST_FIRST)
+
+    with client_for(settings) as client:
+        client.get("/api/card")
+        state = client.app.state.photo_manager
+        state.session.importing.status = web_state.ImportStatus.RUNNING
+        refused = client.post("/api/card/eject")
+        state.session.importing.status = web_state.ImportStatus.DONE
+
+    assert refused.status_code == 409
+    assert "import" in refused.json()["detail"]
+    assert ejected == []
+
+
+def test_eject_takes_no_path_either(settings: Settings) -> None:
+    test_no_route_accepts_a_filesystem_path(settings)

@@ -50,7 +50,7 @@ from ..backup import BackupError, BackupResult
 from ..offload import OffloadError, OffloadResult
 from ..cards import (
     CardError, CardLocation, CardPhoto, CardScan, Dedup, card_writable, confirm_imports,
-    detect_card, remount_read_only, scan_card, settle_known,
+    detect_card, eject_card, remount_read_only, scan_card, settle_known,
 )
 from ..catalog import Catalog
 from ..config import Settings
@@ -897,6 +897,32 @@ class AppState:
             confirming.join(timeout=30.0)
         remount_read_only(location.dcim_root)
         return self.scan(force=True)
+
+    def eject_card(self) -> CardLocation:
+        """Have macOS eject the card — the Format card step's last button.
+
+        Refused while an import is reading it. A confirming pass is stopped
+        first, because anything reading the card makes the eject fail. The
+        scan is dropped afterwards: it describes a card that is no longer there.
+        Returns where the card was.
+        """
+        with self._lock:
+            session = self._session
+            if session is not None and session.importing.running:
+                raise BusyError("An import is reading the card. Eject it when that has finished.")
+            self._cancel_confirm()
+            location = session.scan.location if session is not None else None
+        if location is None or location.dcim_root is None:
+            location = detect_card(self.settings)
+        if not location.found or location.dcim_root is None:
+            raise CardError("No card is attached.")
+        confirming = self._confirm_thread
+        if confirming is not None and confirming.is_alive():
+            confirming.join(timeout=30.0)
+        eject_card(location.dcim_root)
+        with self._lock:
+            self._session = None
+        return location
 
     # ------------------------------------------------------------------
     # Backing up (photo_manager.backup)

@@ -18,7 +18,7 @@ import plistlib
 import subprocess
 from pathlib import Path
 
-__all__ = ["DiskutilError", "diskutil_info", "mount_point", "remount_read_only"]
+__all__ = ["DiskutilError", "diskutil_info", "eject", "mount_point", "remount_read_only"]
 
 
 class DiskutilError(RuntimeError):
@@ -63,6 +63,15 @@ def remount_read_only(path: str | Path) -> Path:
     if not remounted or not remounted.get("MountPoint"):
         raise DiskutilError(f"{device} was unmounted but did not mount again.")
     return Path(remounted["MountPoint"])
+
+
+def eject(path: str | Path) -> None:
+    """Eject the disk the volume *path* is on, as Finder's eject button does.
+
+    Unmounts every volume on that disk and lets macOS power it down, so a card
+    can be pulled out. It writes nothing to the volume.
+    """
+    _run(["diskutil", "eject", str(mount_point(path))])
 
 
 def _run(command: list[str]) -> None:

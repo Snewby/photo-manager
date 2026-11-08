@@ -496,6 +496,24 @@ def create_app(
         """Have macOS mount the card read-only, then rescan it (§4.1)."""
         return _json(_session_payload(app_state, app_state.remount_card()))
 
+    @app.post("/api/card/eject")
+    def card_eject() -> Response:
+        """Eject the card so it can be formatted in the camera. Ejecting
+        changes nothing on it; the answer says whether formatting it would
+        lose anything, as it stood when it was ejected."""
+        session = app_state.session
+        lifecycle = None
+        if session is not None:
+            lifecycle = _lifecycle_payload(
+                _frame_stages(app_state, session),
+                archive=app_state.settings.archive_root is not None,
+            )
+        location = app_state.eject_card()
+        return _json({
+            "ejected": _location_payload(location)["volume"],
+            "lifecycle": lifecycle,
+        })
+
     @app.get("/api/backup")
     def backup_state() -> Response:
         return _json(_backup_payload(app_state))

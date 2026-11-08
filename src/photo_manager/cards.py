@@ -63,6 +63,7 @@ __all__ = [
     "candidate_volumes",
     "card_writable",
     "remount_read_only",
+    "eject_card",
     "CardError",
     "detect_card",
     "scan_card",
@@ -463,6 +464,21 @@ def remount_read_only(dcim_root: Path) -> None:
         raise CardError(
             f"The card could not be remounted read-only: {exc} "
             f"Eject it, slide its lock switch to Lock, and insert it again."
+        ) from exc
+
+
+def eject_card(dcim_root: Path) -> None:
+    """Have macOS eject the card, so it can be pulled out and formatted in the
+    camera. Nothing on it is touched; ejecting is an unmount."""
+    if sys.platform != "darwin":
+        raise CardError("Ejecting a card from here is only done on macOS. Eject it as usual.")
+    from .macos import DiskutilError, eject
+    try:
+        eject(dcim_root)
+    except DiskutilError as exc:
+        raise CardError(
+            f"The card could not be ejected: {exc} "
+            f"Something may still be reading it — try again in a moment, or eject it in Finder."
         ) from exc
 
 

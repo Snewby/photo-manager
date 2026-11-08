@@ -267,7 +267,7 @@ function enter(key) {
   else if (key === 'import') enterImport();
   else if (key === 'archive') enterArchive();
   else if (key === 'tag') enterTag();
-  else if (key === 'format') renderFormat();
+  else if (key === 'format') enterFormat();
 }
 
 for (const item of document.querySelectorAll('.steps__item')) {
@@ -974,22 +974,35 @@ el('archive-go').addEventListener('click', startArchive);
 
 // ---------------------------------------------------------------- 4. Tag
 
+/* This card's outings with nothing said about them — the Library's To tag
+ * list, narrowed to this card, with Apply to all for a card that was one
+ * trip. Skippable: naming can wait, formatting the card cannot lose a tag. */
+let toTag = null;
+
 function enterTag() {
   const outings = state.card.workflow.outings;
-  el('tag-lede').textContent = !stepOf('import').done
+  const imported = stepOf('import').done;
+  el('tag-lede').textContent = !imported
     ? 'Import first: this card\'s photographs are not in the library yet.'
     : outings.length
-      ? `${outings.length} outing${outings.length === 1 ? '' : 's'} from this card ${outings.length === 1 ? 'has' : 'have'} nothing said about ${outings.length === 1 ? 'it' : 'them'} yet.`
+      ? `${outings.length} outing${outings.length === 1 ? '' : 's'} from this card `
+        + `${outings.length === 1 ? 'has' : 'have'} nothing said about `
+        + `${outings.length === 1 ? 'it' : 'them'} yet. Name `
+        + `${outings.length === 1 ? 'it' : 'them'} now, or skip and do it later in the Library.`
       : 'Every outing from this card has a name.';
   el('tag-skip').hidden = stepOf('tag').done || tagSkipped();
-  const body = el('tag-body');
-  body.replaceChildren();
-  if (outings.length) {
-    const link = document.createElement('a');
-    link.href = '/triage';
-    link.textContent = 'Name them in the Library';
-    body.append(link);
+  if (!toTag) {
+    toTag = ToTag.mount(el('tag-body'), {
+      applyAll: true,
+      refresh: async () => {
+        const before = stepOf('tag').done;
+        await load(false);
+        // Named the last one here: carry on to Format card.
+        if (!before && state.step === 'tag' && stepOf('tag').done) go('format', { flow: true });
+      },
+    });
   }
+  toTag.draw(imported ? outings : []);
 }
 
 el('tag-skip').addEventListener('click', () => {
@@ -1034,13 +1047,76 @@ function renderLifecycle(lifecycle) {
       + 'Nothing here deletes from the card — formatting it in the camera is the only thing that does.';
 }
 
+/* The drive's name, for "Everything you kept is on My Passport". */
+async function enterFormat() {
+  renderFormat();
+  if (state.drive) return;
+  try {
+    const status = await api('/api/status');
+    state.drive = state.archive ? status.archive : status.backup;
+    renderFormat();
+  } catch { /* the summary still reads without the drive's name */ }
+}
+
 function renderFormat() {
   if (!state.card) return;
   const lifecycle = state.card.lifecycle;
+  const counts = lifecycle.counts;
+  const drive = state.archive ? (state.drive && (state.drive.volume || state.drive.drive))
+    || 'the archive drive' : 'the backup drive';
   el('format-lede').textContent = lifecycle.safe_to_format
-    ? 'Nothing on this card would be lost by formatting it.'
-    : 'Formatting this card now would lose something.';
+    ? 'Nothing on this card would be lost by formatting it. Eject it, then format it in the camera.'
+    : 'Formatting this card now would lose something — see below. Ejecting it is always safe.';
+
+  const notSafe = counts['keep'] + counts['likely-in-library'] + counts['in-library'];
+  const lines = [
+    notSafe
+      ? [`${notSafe} you kept ${notSafe === 1 ? 'is' : 'are'} not safely on ${drive} yet.`, true]
+      : [`Everything you kept is on ${drive}.`, false],
+    counts['skip'] ? [`${counts['skip']} rejected — fine to lose.`, false] : null,
+    counts['leave']
+      ? [`${counts['leave']} left on the card, which formatting would lose.`, true] : null,
+    counts['undecided'] ? [`${counts['undecided']} not decided yet.`, true] : null,
+  ].filter(Boolean);
+  const list = el('format-summary');
+  list.replaceChildren();
+  for (const [text, bad] of lines) {
+    const item = document.createElement('li');
+    item.textContent = text;
+    if (bad) item.className = 'summary-list__bad';
+    list.append(item);
+  }
+  el('eject-row').hidden = false;
 }
+
+/* Eject, then say what to do next — including, if it is not safe, what
+ * formatting would lose, because the card page is about to forget the card. */
+el('eject').addEventListener('click', async () => {
+  const button = el('eject');
+  button.disabled = true;
+  el('eject-note').textContent = 'Ejecting…';
+  try {
+    const answer = await api('/api/card/eject', { method: 'POST' });
+    const lifecycle = answer.lifecycle;
+    const name = answer.ejected || 'The card';
+    stopPolling();
+    stopImportPolling();
+    el('steps').hidden = true;
+    el('panels').hidden = true;
+    el('card-name').textContent = '';
+    showStatus('ejected', lifecycle && !lifecycle.safe_to_format
+      ? `${name} is ejected. Before you format it in the camera: ${lifecycle.reasons.join(', ')}.`
+      : `${name} is ejected. You can take it out and format it in the camera.`);
+    const library = document.createElement('a');
+    library.href = '/library';
+    library.className = 'button status__next';
+    library.textContent = 'Go to the Library';
+    el('status').append(library);
+  } catch (error) {
+    el('eject-note').textContent = String(error.message || error);
+    button.disabled = false;
+  }
+});
 
 // ----------------------------------------------------------------- wiring
 

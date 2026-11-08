@@ -1239,3 +1239,7 @@ body {
 }
 .bar__link:hover { color: var(--text); background: #272b33; }
 .bar__link--on { color: var(--text); background: #2f343d; }
+
+.status__next { display: inline-block; margin-top: 12px; color: inherit; text-decoration: none; }
+.totag__all { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; }
+.totag__error { margin: 0 0 12px; }
